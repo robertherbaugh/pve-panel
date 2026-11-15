@@ -1,7 +1,7 @@
 import { db, audit } from './db.js';
 import { config } from './config.js';
 import { resolveOffering, selectPlacement, checkOfferingRevision, verifyComputeDeleted } from './compute-placement.js';
-import { beginOperation, priorRequest, requestHash, updateOperation, completeOperation, operationById, operationCredentials, pendingOperations, releaseCompute, assertComputeIdle, computeManaged } from './compute-state.js';
+import { beginOperation, priorRequest, requestHash, updateOperation, completeOperation, operationById, operationCredentials, pendingOperations, releaseCompute, assertComputeIdle, computeManaged, operationStep, setOperationStep, releaseStaging } from './compute-state.js';
 import { capacityLocks,capacityBusy } from './capacity.js';
 import { customerById, requireCustomer } from './tenancy.js';
 import {
@@ -276,8 +276,8 @@ export async function createServer(req, spec) {
         updateOperation(op.id, 'submitting');
         try {
           const task = await pve.post(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/clone`, {
-            newid: id, name: spec.hostname, full: 1, storage: placement.storage, pool: destinationPool,
-            target: placement.node === tpl.node ? undefined : placement.node, description: `pve-panel-operation:${op.id}`,
+            newid: id, name: spec.hostname, full: 1, storage: placement.staging?.storage ?? placement.storage, pool: destinationPool,
+            target: placement.staging || placement.node === tpl.node ? undefined : placement.node, description: `pve-panel-operation:${op.id}`,
           });
           updateOperation(op.id, 'cloning', { upid: task, taskNode: tpl.node });
           return { vmid: id, upid: task, operationId: op.id, targetNode: placement.node, taskNode: tpl.node };
@@ -318,6 +318,37 @@ export async function createServer(req, spec) {
 
 const setProgress = db.prepare('UPDATE vms SET progress = ? WHERE vmid = ?');
 
+async function finishPlacement(id) {
+  const op = operationById(id), plan = op.plan;
+  if (!plan.staging) return;
+  let guest = (await clusterGuests(true)).get(op.vmid);
+  if (!guest || guest.template) throw new Error('The staged VM is missing');
+  const cfg = await pve.get(`${guestPath(guest)}/config`);
+  if (cfg.lock || guest.lock || !String(cfg.description ?? '').includes(`pve-panel-operation:${id}`)) throw new Error('The staged VM identity or lock needs reconciliation');
+  const step = operationStep(id, 'migration');
+  if (step?.upid) await waitTask(step.task_node, step.upid);
+  guest = (await clusterGuests(true)).get(op.vmid);
+  if (guest?.node === plan.node) {
+    setOperationStep(id, 'migration', 'complete'); releaseStaging(id); return;
+  }
+  if (guest?.node !== plan.sourceNode || step) throw new Error('Migration outcome needs provider reconciliation. The panel will not repeat the migration.');
+  if (guest.status !== 'stopped') throw new Error('The staged VM must remain stopped');
+  const ha = await pve.get('/cluster/ha/status/current');
+  if (!Array.isArray(ha) || ha.some(s => s.type === 'lrm' && s.node === plan.node && /maintenance|lost|unavailable/i.test(s.status ?? ''))) throw new Error('The destination entered maintenance');
+  const actor = { account: { id: op.user_id }, customerId: op.customer_id, ip: 'placement' };
+  setOperationStep(id, 'migration', 'submitting');
+  const upid = await pve.post(`${guestPath(guest)}/migrate`, { target: plan.node, targetstorage: plan.storage, online: 0, 'with-local-disks': 1 });
+  setOperationStep(id, 'migration', 'running', upid, guest.node);
+  updateOperation(id, 'migrating', { upid, taskNode: guest.node });
+  await waitTask(guest.node, upid);
+  const placed = (await clusterGuests(true)).get(op.vmid);
+  if (placed?.node !== plan.node) throw new Error('Migration destination could not be verified');
+  const final = await pve.get(`${guestPath(placed)}/config`);
+  if (final.lock || placed.lock) throw new Error('Migration is still locked');
+  setOperationStep(id, 'migration', 'complete'); releaseStaging(id);
+  audit(actor, op.vmid, 'server_placed', { node: plan.node, storage: plan.storage });
+}
+
 async function finishCreate(actor, node, vmid, cloneUpid, spec, tplRow, net, {
   mac = null, done = 'server_created', failed = 'server_create_failed', operationId = null, taskNode = node,
 } = {}) {
@@ -326,7 +357,10 @@ async function finishCreate(actor, node, vmid, cloneUpid, spec, tplRow, net, {
   const windows = spec.setup === 'windows';
   try {
     await waitTask(taskNode, cloneUpid);
-    if (operationId) updateOperation(operationId, 'configuring');
+    if (operationId) {
+      await finishPlacement(operationId);
+      updateOperation(operationId, 'configuring');
+    }
 
     progress('Configuring');
     const cfg = await pve.get(`${path}/config`);
@@ -334,6 +368,7 @@ async function finishCreate(actor, node, vmid, cloneUpid, spec, tplRow, net, {
     if (operationId) {
       const plan = operationById(operationId).plan;
       if (!String(cfg.description ?? '').includes(`pve-panel-operation:${operationId}`)) throw new Error('VM identity does not match its provisioning operation');
+      if (!String(cfg[bootDiskKey(cfg)] ?? '').startsWith(`${plan.storage}:`)) throw new Error('VM storage does not match its reserved class');
       const network = plan.offering.network;
       params.net0 = `${String(cfg.net0 ?? nicModel(cfg.net0)).split(',')[0]},bridge=${network.bridge}${network.vlan ? `,tag=${network.vlan}` : ''},firewall=1`;
     }
@@ -749,13 +784,20 @@ export async function reconcileComputeOperation(req, id, action) {
   }
   const guest = (await clusterGuests(true)).get(op.vmid);
   if (action === 'release') {
+    const migration = operationStep(id, 'migration');
+    if (migration && migration.state !== 'complete') {
+      if (!migration.upid || !migration.task_node) throw new ProvisionError(409, 'An unknown migration retains its reservation');
+      const status = await pve.get(`/nodes/${encodeURIComponent(migration.task_node)}/tasks/${encodeURIComponent(migration.upid)}/status`);
+      if (status.status !== 'stopped') throw new ProvisionError(409, 'Migration is still running');
+    }
     if (!op.upid || !op.task_node || guest) throw new ProvisionError(409, 'Release requires a recorded terminal task and verified VM absence. Unknown submissions retain their reservation.');
     await verifyComputeDeleted(op.vmid);
     releaseCompute(op.vmid);
     db.prepare('DELETE FROM vms WHERE vmid=?').run(op.vmid);
   } else {
-    if (!guest || guest.template || guest.node !== op.plan.node) throw new ProvisionError(409, 'The expected VM is not present on its reserved node');
+    if (!guest || guest.template || ![op.plan.node, ...(op.plan.staging ? [op.plan.sourceNode] : [])].includes(guest.node)) throw new ProvisionError(409, 'The expected VM is not present on its reserved node');
     const cfg = await pve.get(`${guestPath(guest)}/config`);
+    if (operationStep(id, 'migration') && guest.node !== op.plan.node) throw new ProvisionError(409, 'An attempted migration must be reconciled on its destination before resuming');
     if (guest.lock || cfg.lock || !String(cfg.description ?? '').includes(`pve-panel-operation:${id}`) || !(await pve.get(`/pools/${encodeURIComponent(op.plan.pool)}`)).members?.some(m => Number(m.vmid) === op.vmid && m.type === 'qemu')) throw new ProvisionError(409, 'VM identity, pool or lock state needs manual reconciliation');
     const spec = { ...op.plan.spec, ...operationCredentials(id) };
     if (operationById(id).state !== 'review') throw new ProvisionError(409, 'This operation already resumed');

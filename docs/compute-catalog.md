@@ -36,13 +36,17 @@ Full cluster VM audit access is required to count other guests.
 Clone, pool configuration and datastore allocation rights are also required.
 
 Direct cross-node clones require shared template volumes accessible from the destination.
+For local template volumes, the panel creates a stopped clone on the source datastore.
+It then migrates that clone to the reserved node and datastore before first boot.
+A separate staging reservation protects temporary source storage capacity.
+The token needs migration and staging storage allocation rights for this path.
 The panel waits for the task on its source node and configures the VM on its destination node.
 Catalog images currently support QEMU VMs with one data disk and at most one network interface.
 The checked existing bridge and VLAN replace the image's guest network.
 The panel does not enable or change Proxmox SDN.
 
 A restart follows accepted clone tasks without submitting another clone.
-Unknown outcomes retain their reservations and require provider reconciliation under **Compute operations**.
+Unknown clone or migration outcomes retain their reservations and require provider reconciliation under **Compute operations**.
 Resume checks the VM marker, destination, pool and lock state.
 Release requires a recorded terminal task and checked VM absence.
 Unknown submissions cannot be released automatically.
@@ -132,7 +136,7 @@ Do not activate invoicing until allocation reconciliation and pricing rules are 
 1. Configure the catalog, customer profiles and capacity reserves.
 2. Check datastore media, node permissions, template disks, network isolation and connectivity in the target cluster.
 3. Enable catalog provisioning for selected customers after the infrastructure checks pass.
-4. Add placement across eligible nodes, with template replication or clone-and-migrate when direct clone targeting cannot work.
+4. Pilot direct clones and stopped clone-and-migrate placement across eligible nodes.
 5. Make resize, reinstall, restore and deletion preserve the offering and allocation history.
 6. Integrate native Proxmox HA after storage, networking, spare capacity and service acceptance pass their checks.
 7. Connect backup entitlements, Basic destinations, storage limits and usage records to existing backup operations.

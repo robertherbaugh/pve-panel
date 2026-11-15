@@ -49,7 +49,7 @@ export async function startMockPve({ port = 0 } = {}) {
 
   // ---- Setup check state ---------------------------------------------------------
   const VM_PRIVS = ['VM.Audit', 'VM.PowerMgmt', 'VM.Console', 'VM.Snapshot', 'VM.Snapshot.Rollback', 'VM.GuestAgent.Audit',
-    'VM.GuestAgent.Unrestricted', 'VM.Allocate', 'VM.Clone', 'VM.Config.CPU', 'VM.Config.Memory', 'VM.Config.Disk',
+    'VM.GuestAgent.Unrestricted', 'VM.Migrate', 'VM.Allocate', 'VM.Clone', 'VM.Config.CPU', 'VM.Config.Memory', 'VM.Config.Disk',
     'VM.Config.Cloudinit', 'VM.Config.Options', 'VM.Config.Network', 'VM.Backup', 'VM.Config.HWType', 'VM.Config.CDROM'];
   const perms = {
     '/pool/customers': [...VM_PRIVS], '/pool/templates': ['VM.Audit', 'VM.Clone'],
@@ -343,6 +343,17 @@ export async function startMockPve({ port = 0 } = {}) {
     if (!vm) return send(res, null, 500, `Configuration file 'nodes/pve1/qemu-server/${vmid}.conf' does not exist`);
     if (rest === '' && req.method === 'DELETE') { destroyed.push(`DELETE ${vmid} ${u.search}`); log('DESTROY', vmid, u.search);
       if (vm.status !== 'stopped') return send(res, null, 500, 'VM is running'); return send(res, task('qmdestroy', vmid, 1000, () => vms.delete(vmid))); }
+    if (rest === '/migrate' && req.method === 'POST') {
+      const b = await body(req); log('MIGRATE', vmid, JSON.stringify(b));
+      if (vm.status !== 'stopped') return send(res,null,409,'VM must be stopped');
+      vm.lock='migrate';
+      const upid=task('qmigrate',vmid,cluster.migrationDelay ?? 2000,()=>{
+        vm.node=b.target;delete vm.lock;
+        for (const k of Object.keys(vm.cfg)) if (/^((scsi|sata|virtio|ide)\d+|efidisk0|tpmstate0)$/.test(k) && !String(vm.cfg[k]).startsWith('none')) vm.cfg[k]=String(vm.cfg[k]).replace(/^[^:]+:/,`${b.targetstorage}:`);
+      });
+      if (cluster.loseMigrationResponse) { cluster.loseMigrationResponse=false;return res.destroy(); }
+      return send(res,upid);
+    }
     if (rest === '/clone' && req.method === 'POST') { const b = await body(req); log('CLONE', vmid, JSON.stringify(b));
       const id = Number(b.newid); if (vms.has(id)) return send(res,null,500,`VM ${id} already exists`);
       vms.set(id, { origin: vmid, vmid:id, node:b.target || vm.node, type:'qemu', name:b.name, pool:b.pool, status:'stopped', lock:'clone', maxcpu:vm.maxcpu, maxmem:vm.maxmem, maxdisk:vm.maxdisk, cfg:{...vm.cfg, ...(b.description ? {description:b.description} : {}), scsi0: vm.cfg.scsi0.replace(`base-${vmid}`, `vm-${id}`).replace(/^[^:]+:/, `${b.storage || vm.cfg.scsi0.split(':')[0]}:`), net0: vm.cfg.net0 ? vm.cfg.net0.replace(/=[0-9A-Fa-f:]{17}/, '').replace(/^(\w+)/, `$1=${newMac()}`) : `virtio=${newMac()},bridge=vmbr0`} });

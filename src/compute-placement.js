@@ -68,7 +68,24 @@ export async function selectPlacement({ offering, template, sourceConfig, pool, 
     const errors = [...candidate.reasons], node = inventory.nodes.find((n) => n.node === candidate.node), storage = node?.storages.find((s) => s.storage === candidate.storage);
     if (maintenance.has(candidate.node)) errors.push('Node is in maintenance or unavailable to HA.');
     if (grant && !grant.clone.storages.includes(candidate.storage)) errors.push('Storage is outside the clone permission set.');
-    if (candidate.node !== template.node && sourceDisks.some((id) => sourceNode?.storages.find((s) => s.storage === id)?.shared !== true || !node?.storages.some((s) => s.storage === id && s.active === true && s.shared === true))) errors.push('Template volumes are not shared with this node.');
+    let staging = null;
+    if (candidate.node !== template.node && sourceDisks.some((id) => sourceNode?.storages.find((s) => s.storage === id)?.shared !== true || !node?.storages.some((s) => s.storage === id && s.active === true && s.shared === true))) {
+      const disk = Object.entries(sourceConfig).find(([key, value]) => /^(scsi|sata|virtio|ide)\d+$/.test(key) && !/media=cdrom|cloudinit/.test(String(value)));
+      const storage = sourceNode?.storages.find(s => s.storage === String(disk?.[1]).split(':')[0]);
+      // Stage a stopped full clone on the image's datastore, then move it once.
+      const storageKey = storage?.shared ? `shared/${storage.storage}` : `${template.node}/${storage?.storage}`;
+      const diskGb = offering.diskGb + 1;
+      const held = holds.filter(h => h.storage_key === storageKey && h.state === 'held').reduce((n,h) => n+h.disk_gb,0);
+      if (!storage || storage.active !== true || storage.enabled === false || !storage.content.includes('images') || storage.availableBytes == null || storage.availableBytes / 2**30 < diskGb + held + catalog.reserves.diskGb || sourceNode.status !== 'online' || maintenance.has(template.node)) errors.push('Local template staging capacity is unavailable.');
+      else if (grant && !grant.clone.storages.includes(storage.storage)) errors.push('Staging storage is outside the clone permission set.');
+      else {
+        staging = { storage: storage.storage, storageKey, diskGb };
+        try {
+          await requirePrivileges(`/pool/${pool}`, ['VM.Migrate']);
+          await requirePrivileges(`/storage/${storage.storage}`, ['Datastore.AllocateSpace', 'Datastore.Audit']);
+        } catch { errors.push('Local template placement needs migration and staging storage privileges.'); }
+      }
+    }
     if (!allocations.has(candidate.node)) {
       const used = { memoryMb: 0, cores: 0 }; let unknown = false;
       for (const g of guests.values()) if (!g.template && g.node === candidate.node) {
@@ -85,7 +102,7 @@ export async function selectPlacement({ offering, template, sourceConfig, pool, 
     }
     const { used: observed, unknown } = allocations.get(candidate.node), used = { ...observed };
     if (unknown) errors.push('Existing guest reservations cannot be read.');
-    const pending = holds.filter((h) => h.node === candidate.node && !guests.has(h.vmid));
+    const pending = holds.filter((h) => h.node === candidate.node && (!guests.has(h.vmid) || guests.get(h.vmid).node !== h.node));
     used.memoryMb += pending.reduce((n, h) => n + h.memory_mb, 0); used.cores += pending.reduce((n, h) => n + h.cores, 0);
     if (node?.memoryBytes != null && used.memoryMb + offering.memoryMb + catalog.reserves.memoryMb > node.memoryBytes / 2 ** 20) errors.push('Allocated memory leaves insufficient reservation capacity.');
     // Start conservatively at one allocated vCPU per logical host CPU.
@@ -101,7 +118,7 @@ export async function selectPlacement({ offering, template, sourceConfig, pool, 
       } catch { errors.push('Storage allocation permissions or the verified guest bridge are unavailable.'); }
     }
     if (errors.length) reasons.push(`${candidate.node}/${candidate.storage}: ${errors.join(' ')}`);
-    else candidates.push({ ...candidate, storageKey, score: used.memoryMb / (node.memoryBytes / 2 ** 20) + used.cores / node.cores });
+    else candidates.push({ ...candidate, storageKey, staging, score: used.memoryMb / (node.memoryBytes / 2 ** 20) + used.cores / node.cores });
   }
   candidates.sort((a, b) => a.score - b.score || a.node.localeCompare(b.node) || a.storage.localeCompare(b.storage));
   if (!candidates.length) fail('No eligible placement is available. Ask the provider to check capacity, template accessibility and permissions.');

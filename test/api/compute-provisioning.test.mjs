@@ -31,13 +31,13 @@ let vmid;
 test('catalog provisioning derives size, clones to another node and records its allocation',async()=>{
  const key=randomUUID(), request=input('catalog-web');
  const r=await create(request,key);assert.equal(r.status,202,JSON.stringify(r.json));vmid=r.json.vmid;
- const op=sql.prepare('SELECT * FROM compute_operations WHERE vmid=?').get(vmid);
+ const op=sql.prepare('SELECT * FROM compute_operations WHERE vmid=? ORDER BY rowid DESC LIMIT 1').get(vmid);
  assert.ok(op);assert.notEqual(op.credentials,null);assert.ok(!JSON.stringify(op).includes(request.password));
  assert.equal(stack.mock.vms.get(vmid).node,'pve2');
  const settled=await stack.serverSettled(user,vmid);assert.equal(settled.state,'ready',settled.error);
  assert.equal(stack.mock.vms.get(vmid).cfg.cores,'1');assert.match(stack.mock.vms.get(vmid).cfg.scsi0,/^nvme:/);
  assert.match(stack.mock.vms.get(vmid).cfg.net0,/bridge=vmbr0,tag=47,firewall=1/);
- const final=sql.prepare('SELECT * FROM compute_operations WHERE vmid=?').get(vmid);assert.equal(final.state,'complete');assert.equal(final.credentials,null);
+ const final=sql.prepare('SELECT * FROM compute_operations WHERE vmid=? ORDER BY rowid DESC LIMIT 1').get(vmid);assert.equal(final.state,'complete');assert.equal(final.credentials,null);
  const history=(await user.get('/api/compute-allocations')).json.events;assert.equal(history.length,1);assert.equal(history[0].offering.storageClassId,'fast');
  assert.equal((await create(request,key)).json.vmid,vmid);assert.equal(sql.prepare('SELECT count(*) n FROM compute_operations').get().n,1);
  assert.equal((await create({...request,hostname:'changed'},key)).status,409);
@@ -69,9 +69,9 @@ test('accepted cross-node clone resumes after panel restart without a second clo
  const id=result.json.vmid;
  await stack.restartPanel();
  assert.equal((await stack.serverSettled(user,id)).state,'ready',stack.logs().slice(-2000));
- const op=sql.prepare('SELECT * FROM compute_operations WHERE vmid=?').get(id);
+ const op=sql.prepare('SELECT * FROM compute_operations WHERE vmid=? ORDER BY rowid DESC LIMIT 1').get(id);
  assert.equal(op.task_node,'pve1');assert.equal(op.state,'complete');assert.equal(op.credentials,null);
- assert.equal(sql.prepare('SELECT count(*) n FROM compute_allocations WHERE vmid=?').get(id).n,1);
+ assert.equal(sql.prepare('SELECT count(*) n FROM compute_allocations WHERE vmid=? AND ended_at IS NULL').get(id).n,1);
  stack.mock.cluster.cloneDelay=2500;
 });
 test('lost clone response retains capacity, blocks destructive paths and resumes only the existing VM', async () => {
@@ -96,4 +96,36 @@ test('lost clone response retains capacity, blocks destructive paths and resumes
  await waitFor(()=>sql.prepare('SELECT ended_at FROM compute_allocations WHERE vmid=?').get(op.vmid)?.ended_at);
  assert.equal(sql.prepare('SELECT state FROM compute_reservations WHERE operation_id=?').get(op.id).state,'released');
  assert.equal(sql.prepare("SELECT count(*) n FROM compute_allocation_events e JOIN compute_allocations a ON a.id=e.allocation_id WHERE a.vmid=? AND e.kind='deleted'").get(op.vmid).n,1);
+});
+test('local templates clone while stopped, then migrate to their reserved node and storage', async () => {
+ const c=catalogBody((await admin.get('/api/admin/compute-catalog')).json);
+ c.classes.find(c=>c.id==='fast').bindings=[{node:'pve2',storage:'nvme',purpose:'vm'}];
+ assert.equal((await admin.put('/api/admin/compute-catalog',c)).status,200);
+ stack.mock.cluster.storageInventories.pve1.find(s=>s.storage==='VMStorage').shared=0;
+ stack.mock.cluster.storageInventories.pve2=stack.mock.cluster.storageInventories.pve2.filter(s=>s.storage!=='VMStorage');
+ stack.mock.cluster.migrationDelay=5000;
+ const r=await create(input('local-template'));assert.equal(r.status,202,JSON.stringify(r.json));
+ assert.equal(stack.mock.vms.get(r.json.vmid).node,'pve1');assert.equal(stack.mock.vms.get(r.json.vmid).status,'stopped');
+ const op=sql.prepare('SELECT * FROM compute_operations WHERE vmid=? ORDER BY rowid DESC LIMIT 1').get(r.json.vmid);
+ assert.equal(sql.prepare('SELECT state FROM compute_staging_reservations WHERE operation_id=?').get(op.id).state,'held');
+ await waitFor(()=>sql.prepare("SELECT 1 FROM compute_operation_steps WHERE operation_id=? AND name='migration' AND state='running'").get(op.id));
+ await stack.restartPanel();
+ const settled=await stack.serverSettled(user,r.json.vmid);assert.equal(settled.state,'ready',settled.error);
+ assert.equal(stack.mock.vms.get(r.json.vmid).node,'pve2');assert.match(stack.mock.vms.get(r.json.vmid).cfg.scsi0,/^nvme:/);
+ assert.equal(sql.prepare('SELECT state FROM compute_staging_reservations WHERE operation_id=?').get(op.id).state,'released');
+ assert.equal(sql.prepare('SELECT count(*) n FROM compute_allocations WHERE vmid=? AND ended_at IS NULL').get(r.json.vmid).n,1);
+ stack.mock.cluster.migrationDelay=2000;
+});
+test('an unknown migration is never submitted twice and resumes only after destination identity passes', async () => {
+ stack.mock.cluster.loseMigrationResponse=true;
+ const r=await create(input('migration-response'));assert.equal(r.status,202,JSON.stringify(r.json));
+ assert.equal((await stack.serverSettled(user,r.json.vmid)).state,'failed');
+ const op=sql.prepare('SELECT * FROM compute_operations WHERE vmid=? ORDER BY rowid DESC LIMIT 1').get(r.json.vmid);
+ assert.equal(op.state,'review');assert.equal(sql.prepare('SELECT state FROM compute_reservations WHERE operation_id=?').get(op.id).state,'held');
+ assert.equal((await admin.post(`/api/admin/compute-operations/${op.id}/reconcile`,{action:'release'})).status,409);
+ await waitFor(()=>stack.mock.vms.get(r.json.vmid).node==='pve2'&&!stack.mock.vms.get(r.json.vmid).lock);
+ const resume=await admin.post(`/api/admin/compute-operations/${op.id}/reconcile`,{action:'resume'});assert.equal(resume.status,200,resume.text);
+ const settled=await stack.serverSettled(user,r.json.vmid);assert.equal(settled.state,'ready',settled.error);
+ const step=sql.prepare("SELECT * FROM compute_operation_steps WHERE operation_id=? AND name='migration'").get(op.id);
+ assert.equal(step.state,'complete');assert.equal(step.upid,null,'reconciliation did not submit a second migration');
 });

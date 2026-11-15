@@ -21,6 +21,15 @@ db.exec(`
     cores INTEGER NOT NULL, memory_mb INTEGER NOT NULL, disk_gb INTEGER NOT NULL,
     state TEXT NOT NULL CHECK(state IN ('held','committed','released'))
   );
+  CREATE TABLE IF NOT EXISTS compute_staging_reservations (
+    operation_id TEXT PRIMARY KEY REFERENCES compute_operations(id), vmid INTEGER NOT NULL,
+    node TEXT NOT NULL, storage TEXT NOT NULL, storage_key TEXT NOT NULL,
+    disk_gb INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'held'
+  );
+  CREATE TABLE IF NOT EXISTS compute_operation_steps (
+    operation_id TEXT NOT NULL REFERENCES compute_operations(id), name TEXT NOT NULL,
+    state TEXT NOT NULL, upid TEXT, task_node TEXT, PRIMARY KEY(operation_id,name)
+  );
   CREATE TABLE IF NOT EXISTS compute_allocations (
     id TEXT PRIMARY KEY, vmid INTEGER NOT NULL, customer_id INTEGER NOT NULL,
     offering TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT
@@ -50,6 +59,8 @@ export function beginOperation({ customerId, userId, vmid, kind = 'create', key 
       VALUES(?,?,?,?,?,'reserved',?,?,?,?)`).run(id, customerId, userId, vmid, kind, key, hash, JSON.stringify(plan), credentials ? seal(`compute:${id}`, JSON.stringify(credentials)) : null);
     db.prepare(`INSERT INTO compute_reservations(operation_id,vmid,node,storage,storage_key,cores,memory_mb,disk_gb,state)
       VALUES(?,?,?,?,?,?,?,?,'held')`).run(id, vmid, plan.node, plan.storage, plan.storageKey, plan.cores, plan.memoryMb, plan.diskGb);
+    if (plan.staging) db.prepare('INSERT INTO compute_staging_reservations(operation_id,vmid,node,storage,storage_key,disk_gb) VALUES(?,?,?,?,?,?)')
+      .run(id, vmid, plan.sourceNode, plan.staging.storage, plan.staging.storageKey, plan.staging.diskGb);
     onReserve(id);
     db.exec('COMMIT');
   } catch (err) { db.exec('ROLLBACK'); throw err; }
@@ -64,7 +75,7 @@ export function updateOperation(id, state, { upid = null, taskNode = null, error
     updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(state, upid, taskNode, error, id);
 }
 export function heldReservations() {
-  return db.prepare("SELECT * FROM compute_reservations WHERE state IN ('held','committed')").all();
+  return db.prepare("SELECT * FROM compute_reservations WHERE state IN ('held','committed') UNION ALL SELECT operation_id,vmid,node,storage,storage_key,0 AS cores,0 AS memory_mb,disk_gb,state FROM compute_staging_reservations WHERE state='held'").all();
 }
 export const activeComputeOperation = (vmid) => parse(db.prepare("SELECT * FROM compute_operations WHERE vmid=? AND state NOT IN ('complete','cancelled') ORDER BY created_at DESC LIMIT 1").get(vmid));
 export function assertComputeIdle(vmid) {
@@ -107,6 +118,11 @@ export function completeOperation(id, onComplete = () => {}) {
   } catch (err) { db.exec('ROLLBACK'); throw err; }
 }
 // Call only after the caller has verified that the VM and held resources are gone.
+export const operationStep = (id, name) => db.prepare('SELECT * FROM compute_operation_steps WHERE operation_id=? AND name=?').get(id, name);
+export function setOperationStep(id, name, state, upid = null, taskNode = null) {
+  db.prepare('INSERT INTO compute_operation_steps(operation_id,name,state,upid,task_node) VALUES(?,?,?,?,?) ON CONFLICT(operation_id,name) DO UPDATE SET state=excluded.state,upid=COALESCE(excluded.upid,upid),task_node=COALESCE(excluded.task_node,task_node)').run(id, name, state, upid, taskNode);
+}
+export const releaseStaging = id => db.prepare("UPDATE compute_staging_reservations SET state='released' WHERE operation_id=?").run(id);
 export function releaseCompute(vmid) {
   const now = new Date().toISOString();
   db.exec('BEGIN IMMEDIATE');
@@ -117,6 +133,7 @@ export function releaseCompute(vmid) {
       db.prepare("INSERT INTO compute_allocation_events(allocation_id,kind,offering,occurred_at) VALUES(?,'deleted',?,?)").run(old.id, JSON.stringify(old.offering), now);
     }
     db.prepare("UPDATE compute_reservations SET state='released' WHERE vmid=?").run(vmid);
+    db.prepare("UPDATE compute_staging_reservations SET state='released' WHERE vmid=?").run(vmid);
     db.prepare("UPDATE compute_operations SET state='cancelled',credentials=NULL,updated_at=? WHERE vmid=? AND state!='complete'").run(now, vmid);
     db.exec('COMMIT');
   } catch (err) { db.exec('ROLLBACK'); throw err; }
