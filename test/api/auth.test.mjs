@@ -64,7 +64,8 @@ test('required 2FA: set up at first sign-in, then codes; replay and reused recov
   assert.match(setup.json.qrSvg, /<svg/);
   const key = setup.json.key;
   assert.equal((await c.post('/api/auth/2fa/activate', { code: '000000' })).status, 400);
-  const activated = await c.post('/api/auth/2fa/activate', { code: totp(key) });
+  const activationCode = totp(key);
+  const activated = await c.post('/api/auth/2fa/activate', { code: activationCode });
   assert.equal(activated.status, 200);
   assert.equal(activated.json.recoveryCodes.length, 10);
   assert.equal((await c.get('/api/vms')).status, 200);
@@ -73,7 +74,7 @@ test('required 2FA: set up at first sign-in, then codes; replay and reused recov
   // next sign-in: code step; the code used for activation can't be replayed
   await c.post('/api/auth/logout');
   assert.deepEqual((await c.post('/api/auth/login', { email: 'mfa@example.com', password: 'another-long-password' })).json, { twoFactor: 'verify' });
-  assert.equal((await c.post('/api/auth/2fa/verify', { code: totp(key) })).status, 401, 'replay refused');
+  assert.equal((await c.post('/api/auth/2fa/verify', { code: activationCode })).status, 401, 'replay refused');
   assert.equal((await c.post('/api/auth/2fa/verify', { code: totp(key, 1) })).status, 200, 'next code accepted');
 
   // recovery code works exactly once

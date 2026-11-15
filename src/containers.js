@@ -123,6 +123,7 @@ export function containerParams({ vmid, row, spec, net, pool, mac = null }) {
     net0: nic,
     unprivileged: 1,
     pool,
+    ...(spec.accessTags !== undefined ? { tags: spec.accessTags } : {}),
     onboot: 0,
   };
   if (row.nesting) params.features = 'nesting=1';

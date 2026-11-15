@@ -37,7 +37,12 @@ function provider() {
       { [client.clockTolerance]: 30 },
       o.clientSecret ? client.ClientSecretBasic(o.clientSecret) : client.None(),
       o.allowInsecureHttp ? { execute: [client.allowInsecureRequests] } : undefined,
-    ).catch((err) => {
+    ).then((cfg) => {
+      // Group/entitlement grants require a verified JWS as well as the token
+      // endpoint's TLS. openid-client otherwise permits endpoint trust alone.
+      client.enableNonRepudiationChecks(cfg);
+      return cfg;
+    }).catch((err) => {
       configPromise = null;
       throw err;
     });

@@ -7,6 +7,7 @@ import * as totp from './totp.js';
 import * as oidc from './oidc.js';
 import { checkInvitation, acceptInvitation } from './invite.js';
 import * as passkeys from './passkeys.js';
+import { rememberAuthorization, forgetAuthorization } from './access.js';
 
 // Password sign-ins per minute and address. Only the test suite raises it (all
 // browser tests sign in from 127.0.0.1 within a minute).
@@ -67,7 +68,7 @@ async function authPlugin(app, { scope }) {
   const me = (u) => ({ id: u.id, email: u.email, isAdmin: !!u.is_admin });
 
   async function startSession(req, reply, user, how) {
-    const token = await reply.jwtSign({ sub: user.id, scope });
+    const token = await reply.jwtSign({ sub: user.id, scope, ...(req.oidcAuthorizationId ? { az: req.oidcAuthorizationId } : {}) });
     req.account = user;
     audit(req, null, adminOnly ? 'admin_login' : 'login', how === 'passkey' ? { passkey: true } : how ? { twoFactor: how } : null);
     return reply
@@ -88,6 +89,7 @@ async function authPlugin(app, { scope }) {
       if (claim.scope !== `${scope}:2fa` || claim.stage !== stage) return null;
       const user = findByEmail.get(db.prepare('SELECT email FROM users WHERE id = ?').get(claim.sub)?.email ?? '');
       if (!user || user.deleting || (adminOnly && !user.is_admin)) return null;
+      req.oidcAuthorizationId = claim.az;
       return user;
     } catch {
       return null;
@@ -156,7 +158,7 @@ async function authPlugin(app, { scope }) {
     const codes = totp.activate(user.id, String(req.body.code).replace(/\s/g, ''));
     if (!codes) return reply.code(400).send({ error: 'That code is not correct. Enter the 6-digit code your app shows now.' });
     audit({ account: user, ip: req.ip }, null, 'twofa_enabled');
-    const token = await reply.jwtSign({ sub: user.id, scope });
+    const token = await reply.jwtSign({ sub: user.id, scope, ...(req.oidcAuthorizationId ? { az: req.oidcAuthorizationId } : {}) });
     req.account = user;
     audit(req, null, adminOnly ? 'admin_login' : 'login', { twoFactor: 'setup' });
     return reply
@@ -230,7 +232,7 @@ async function authPlugin(app, { scope }) {
 
     const publicOrigin = new URL(config.oidc.publicUrl[scope]).origin;
 
-    app.get('/api/auth/oidc/start', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
+    app.get('/api/auth/oidc/start', { config: { rateLimit: { max: SIGNIN_LIMIT * 2, timeWindow: '1 minute' } } }, async (req, reply) => {
       // The sign-in cookie must be set on the same address the provider sends
       // the browser back to. If the panel was opened under another address
       // (IP instead of name, other port, tunnel), start again on the right one.
@@ -248,7 +250,7 @@ async function authPlugin(app, { scope }) {
       }
     });
 
-    app.get('/api/auth/oidc/callback', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
+    app.get('/api/auth/oidc/callback', { config: { rateLimit: { max: SIGNIN_LIMIT * 2, timeWindow: '1 minute' } } }, async (req, reply) => {
       let tx;
       const raw = req.cookies[txCookie];
       try {
@@ -285,6 +287,9 @@ async function authPlugin(app, { scope }) {
         return fail(req, reply, err.code ?? 'failed', `${err.message} (sub ${claims.sub}, email ${claims.email ?? '-'})`);
       }
       const { user, linked, created } = result;
+      let az;
+      try { az = rememberAuthorization(user, claims); }
+      catch (err) { return fail(req, reply, 'failed', err.message); }
       const actor = { account: user, ip: req.ip };
       if (created) audit(actor, null, 'sso_account_created', { email: user.email, issuer: claims.iss });
       if (linked) audit(actor, null, 'sso_account_linked', { email: user.email, issuer: claims.iss });
@@ -293,12 +298,12 @@ async function authPlugin(app, { scope }) {
       const idpMfa = config.oidc.trustIdpMfa && oidc.idpUsedMfa(claims);
       if (!idpMfa && (user.totp_enabled || user.totp_required)) {
         const stage = user.totp_enabled ? 'verify' : 'setup';
-        const token = app.jwt.sign({ sub: user.id, scope: `${scope}:2fa`, stage }, { expiresIn: '5m' });
+        const token = app.jwt.sign({ sub: user.id, scope: `${scope}:2fa`, stage, az }, { expiresIn: '5m' });
         reply.setCookie(pendingCookie, token, cookieOpts(300));
         return continueTo(reply, '/?sso=2fa');
       }
 
-      const session = await reply.jwtSign({ sub: user.id, scope });
+      const session = await reply.jwtSign({ sub: user.id, scope, az });
       req.account = user;
       audit(req, null, adminOnly ? 'admin_login' : 'login', { sso: true, idpMfa: oidc.idpUsedMfa(claims) });
       reply.clearCookie(pendingCookie, { path: '/' }).setCookie(cookieName, session, cookieOpts(SESSION_HOURS * 3600));
@@ -433,6 +438,13 @@ async function authPlugin(app, { scope }) {
   });
 
   app.post('/api/auth/logout', async (req, reply) => {
+    try {
+      await req.jwtVerify();
+      if (req.user.scope === scope) {
+        req.account = { id: req.user.sub };
+        forgetAuthorization(req);
+      }
+    } catch { /* clearing an absent/expired cookie still succeeds */ }
     return reply.clearCookie(cookieName, { path: '/' }).clearCookie(pendingCookie, { path: '/' }).code(204).send();
   });
 

@@ -67,6 +67,9 @@ export const config = {
     portals: (process.env.OIDC_PORTALS || 'customer,admin').split(',').map((p) => p.trim()).filter(Boolean),
     label: (process.env.OIDC_BUTTON_LABEL || 'Sign in with single sign-on').trim().slice(0, 60),
     scopes: (process.env.OIDC_SCOPES || 'openid email profile').trim(),
+    groupsClaim: process.env.OIDC_GROUPS_CLAIM || 'groups',
+    entitlementsClaim: process.env.OIDC_ENTITLEMENTS_CLAIM || 'entitlements',
+    authorizationMaxAge: Number(process.env.OIDC_AUTHORIZATION_MAX_AGE_SECONDS || 300),
     publicUrl: {
       customer: (process.env.PANEL_PUBLIC_URL || '').replace(/\/+$/, ''),
       admin: (process.env.ADMIN_PUBLIC_URL || '').replace(/\/+$/, ''),
@@ -129,6 +132,12 @@ if (config.oidc.enabled) {
     }
   }
   if (!['auto', 'always', 'never'].includes(o.par)) throw new Error('OIDC_USE_PAR must be auto, always or never');
+}
+if (!Number.isInteger(config.oidc.authorizationMaxAge) || config.oidc.authorizationMaxAge < 30 || config.oidc.authorizationMaxAge > 3600) {
+  throw new Error('OIDC_AUTHORIZATION_MAX_AGE_SECONDS must be between 30 and 3600');
+}
+for (const claim of [config.oidc.groupsClaim, config.oidc.entitlementsClaim]) {
+  if (!/^[A-Za-z_][A-Za-z0-9_.:/-]{0,199}$/.test(claim)) throw new Error('Invalid OIDC authorization claim name');
 }
 for (const portal of ['customer', 'admin']) {
   const oidcHere = config.oidc.enabled && config.oidc.portals.includes(portal);

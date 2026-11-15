@@ -11,6 +11,7 @@ import { expiryForNewServer } from './expiry.js';
 import { activeRun } from './winupdate.js';
 import { forgetServerBackups } from './backups.js';
 import { offeredContainerTemplates, containerRow, containerParams, containerMac } from './containers.js';
+import { cloneRule, cloneRules, withLimits } from './access.js';
 
 const MB = 1024 ** 2;
 const GB = 1024 ** 3;
@@ -145,7 +146,14 @@ function applySetupRules(spec, offered) {
  * background, tracked through the `state` column.
  */
 export async function createServer(req, spec) {
-  const account = req.account;
+  let grant = null;
+  if (spec.accessRuleId) grant = cloneRule(req, spec.accessRuleId);
+  else if (!req.account.can_create) {
+    const available = cloneRules(req);
+    if (available.length === 1) grant = available[0];
+    else if (available.length > 1) throw new ProvisionError(400, 'Choose a cloning destination');
+  }
+  const account = grant ? withLimits(req.account, grant) : req.account;
   if (!account.can_create) throw new ProvisionError(403, 'Creating servers is not enabled for your account');
   if (creatingFor.has(account.id)) {
     throw new ProvisionError(409, 'Another server is being created. Wait until it has finished.');
@@ -159,6 +167,18 @@ export async function createServer(req, spec) {
     const tplRow = isContainer ? null : db.prepare('SELECT * FROM templates WHERE vmid = ?').get(spec.templateId);
     if (!tplRow && !ctRow) throw new ProvisionError(400, 'That image is not available');
     const tpl = isContainer ? null : await locateTemplate(spec.templateId);
+    let destinationPool = config.pve.pool;
+    if (grant) {
+      if (!grant.clone.templates.includes(spec.templateId)) throw new ProvisionError(403, 'That image is not allowed at this destination');
+      const source = isContainer ? null : await pve.get(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/config`);
+      const storages = isContainer ? [ctRow.storage] : tplRow.storage ? [tplRow.storage]
+        : Object.entries(source).filter(([key, value]) => /^(?:(?:ide|sata|scsi|virtio)\d+|efidisk0|tpmstate0)$/.test(key) && !String(value).startsWith('none'))
+          .map(([, value]) => String(value).split(':')[0]);
+      if (!storages.length || storages.some((storage) => !grant.clone.storages.includes(storage))) throw new ProvisionError(403, 'The image storage is not allowed at this destination');
+      destinationPool = grant.clone.pool;
+      spec.accessTags = grant.tags.join(';');
+      spec.accessRuleId = grant.id;
+    }
     const offered = (await offeredTemplates()).find((t) => t.id === spec.templateId);
     if (!offered) throw new ProvisionError(400, 'That image is not available');
     if (spec.diskGb < offered.minDiskGb) {
@@ -198,27 +218,34 @@ export async function createServer(req, spec) {
           // taken in Proxmox, try the next one
         }
       }
+      if (grant) {
+        // Re-evaluate after asynchronous quota/ID work. A policy edit or expired
+        // claim lease must not authorize a late clone with an old rule snapshot.
+        const current = cloneRule(req, grant.id);
+        if (JSON.stringify(current) !== JSON.stringify(grant)) throw new ProvisionError(409, 'The cloning policy changed. Please try again.');
+      }
       const task = isContainer
-        ? await pve.post(`/nodes/${encodeURIComponent(ctRow.node)}/lxc`, containerParams({ vmid: id, row: ctRow, spec, net, pool: config.pve.pool }))
+        ? await pve.post(`/nodes/${encodeURIComponent(ctRow.node)}/lxc`, containerParams({ vmid: id, row: ctRow, spec, net, pool: destinationPool }))
         : await pve.post(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/clone`, {
           newid: id,
           name: spec.hostname,
           full: 1,
           storage: tplRow.storage || undefined,
-          pool: config.pve.pool,
+          pool: destinationPool,
         });
       return { vmid: id, upid: task };
     });
 
     const templateRef = isContainer ? spec.templateId : tpl.vmid;
     db.prepare(`
-      INSERT INTO vms (vmid, user_id, type, label, state, created_by_customer, spec, progress, expires_at, expiry_set_at)
-      VALUES (?, ?, ?, NULL, 'creating', 1, ?, ?, ?, ?)
+      INSERT INTO vms (vmid, user_id, type, label, state, created_by_customer, spec, progress, expires_at, expiry_set_at, access_managed)
+      VALUES (?, ?, ?, NULL, 'creating', 1, ?, ?, ?, ?, ?)
     `).run(vmid, account.id, isContainer ? 'lxc' : 'qemu', JSON.stringify({
       cores: spec.cores, memoryMb: spec.memoryMb, diskGb: spec.diskGb, template: templateRef,
       hostname: spec.hostname,
-    }), isContainer ? 'Creating the container' : 'Copying the image', expiryForNewServer(account.id), new Date().toISOString());
-    audit(req, vmid, 'server_create_started', { template: templateRef, hostname: spec.hostname });
+      ...(grant ? { accessRuleId: grant.id, pool: destinationPool } : {}),
+    }), isContainer ? 'Creating the container' : 'Copying the image', expiryForNewServer(account.id), new Date().toISOString(), grant ? 1 : 0);
+    audit(req, vmid, 'server_create_started', { template: templateRef, hostname: spec.hostname, ...(grant ? { accessRuleId: grant.id, pool: destinationPool } : {}) });
 
     background = true;
     const actor = { account: { id: account.id }, ip: req.ip };
@@ -261,6 +288,7 @@ async function finishCreate(actor, node, vmid, cloneUpid, spec, tplRow, net, {
       // Proxmox expects the key list URL-encoded (in addition to form encoding).
       if (spec.sshKeys) params.sshkeys = encodeURIComponent(`${spec.sshKeys.trim()}\n`);
     }
+    if (spec.accessTags !== undefined) params.tags = spec.accessTags;
     await pve.put(`${path}/config`, params);
     if (net) await isolateGuest(path, net);
 

@@ -1,6 +1,7 @@
 import { Readable } from 'node:stream';
 import { db, audit } from '../db.js';
 import { config } from '../config.js';
+import { authorizedRow, visibleRows, capabilities, routeAction, cloneRules, cloneRule, withLimits, authorizationStatus } from '../access.js';
 import {
   pve, clusterGuests, locateGuest, guestPath, invalidateGuestCache, bootDiskKey, diskSizeGb,
 } from '../pve.js';
@@ -18,8 +19,6 @@ import {
   backupInfo, backupsAvailableFor, startBackup, startRestore, deleteBackup, setSchedule, listFiles, downloadFile,
 } from '../backups.js';
 
-const ownedByUser = db.prepare('SELECT * FROM vms WHERE vmid = ? AND user_id = ?');
-const listForUser = db.prepare('SELECT * FROM vms WHERE user_id = ? ORDER BY vmid');
 const insertTask = db.prepare(
   'INSERT INTO tasks (upid, user_id, vmid, node, action) VALUES (?, ?, ?, ?, ?)'
 );
@@ -40,16 +39,12 @@ function notFound() {
   return err;
 }
 
-/**
- * The single gate for every per-VM route: the VMID must be a positive
- * integer, belong to the signed-in user in OUR database, and exist in
- * the cluster. Unknown and not-owned both return 404 so customers can't
- * probe for other people's VMIDs.
- */
-async function ownedGuest(req) {
+/** Resolve an already-authorized, ready guest. Unknown and unauthorized IDs
+ * both return 404 to avoid exposing other customers' resources. */
+async function accessibleGuest(req) {
   const vmid = Number(req.params.vmid);
   if (!Number.isInteger(vmid) || vmid < 100) throw notFound();
-  const row = ownedByUser.get(vmid, req.account.id);
+  const row = req.accessRow ?? await authorizedRow(req, vmid);
   if (!row) throw notFound();
   if (row.state !== 'ready') {
     const err = new Error(row.state === 'creating'
@@ -144,10 +139,18 @@ async function guestIps(path) {
 
 export default async function vmRoutes(app) {
   app.addHook('preHandler', app.authenticate);
+  app.addHook('preHandler', async (req) => {
+    if (req.params.vmid === undefined) return;
+    req.accessRow = await authorizedRow(req, Number(req.params.vmid), routeAction(req));
+    if (req.accessRow.access_managed && req.accessRow.user_id === req.account.id && routeAction(req) === 'resize') {
+      const spec = JSON.parse(req.accessRow.spec ?? '{}');
+      req.account = withLimits(req.account, cloneRule(req, spec.accessRuleId));
+    }
+  });
 
   // All servers of the signed-in customer
   app.get('/api/vms', async (req) => {
-    const rows = listForUser.all(req.account.id);
+    const rows = await visibleRows(req);
     const guests = await clusterGuests();
     // First time a server shows up: read its OS type once (e.g. assigned Windows VMs).
     const unknown = rows.filter((r) => !r.ostype && r.state === 'ready' && guests.has(r.vmid));
@@ -156,22 +159,30 @@ export default async function vmRoutes(app) {
       r.ostype = cfg.ostype ?? (r.type === 'lxc' ? 'l26' : 'other');
       saveOstype.run(r.ostype, r.vmid);
     }));
-    return rows.map((row) => summarize(row, guests.get(row.vmid)));
+    return Promise.all(rows.map(async (row) => {
+      const permissions = await capabilities(req, row, guests.get(row.vmid));
+      return { ...summarize(row, guests.get(row.vmid)), permissions,
+        deletable: row.user_id === req.account.id && !!row.created_by_customer && permissions.includes('delete'),
+        reinstallable: row.user_id === req.account.id && !!row.created_by_customer && permissions.includes('reinstall') };
+    }));
   });
 
   // ---- Self-service creation ---------------------------------------------
 
   app.get('/api/account', async (req) => {
-    const a = req.account;
+    const grants = cloneRules(req);
+    const a = req.account.can_create ? req.account : grants.length ? withLimits(req.account, grants[0]) : req.account;
+    const authorization = authorizationStatus(req);
     const network = networkOf(a.id);
     const vpn = vpnInfoFor(a.id);
     const tailscale = config.tailscale.enabled;
     // Version number only; commit, build date and update status stay admin-only.
     const panelVersion = config.showVersionToCustomers ? versionInfo.version : null;
     const backups = backupsAvailableFor(a.id);
-    if (!a.can_create) return { canCreate: false, network, vpn, tailscale, panelVersion, backups };
+    if (!a.can_create) return { canCreate: false, network, vpn, tailscale, panelVersion, backups, authorization, cloneDestinations: [] };
     return {
       canCreate: true,
+      personalCreation: !!req.account.can_create,
       limits: limitsOf(a),
       usage: await usageOf(a.id),
       network,
@@ -180,12 +191,16 @@ export default async function vmRoutes(app) {
       tailscale,
       panelVersion,
       backups,
+      authorization,
+      cloneDestinations: grants.map((r) => ({ id: r.id, name: r.name, pool: r.clone.pool, templates: r.clone.templates, limits: r.clone.limits })),
     };
   });
 
   app.get('/api/templates', async (req, reply) => {
-    if (!req.account.can_create) return reply.code(403).send({ error: 'Creating servers is not enabled for your account' });
-    return offeredTemplates();
+    const grants = cloneRules(req);
+    if (!req.account.can_create && !grants.length) return reply.code(403).send({ error: 'Creating servers is not enabled for your account' });
+    const offered = await offeredTemplates();
+    return req.account.can_create ? offered : offered.filter((t) => grants.some((r) => r.clone.templates.includes(t.id)));
   });
 
   app.post('/api/vms', {
@@ -198,6 +213,7 @@ export default async function vmRoutes(app) {
         properties: {
           hostname: { type: 'string', pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' },
           templateId: TEMPLATE_ID,
+          accessRuleId: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,63}$' },
           cores: { type: 'integer', minimum: 1, maximum: 128 },
           memoryMb: { type: 'integer', minimum: 512, maximum: 1048576 },
           diskGb: { type: 'integer', minimum: 1, maximum: 65536 },
@@ -232,7 +248,7 @@ export default async function vmRoutes(app) {
     },
   }, async (req, reply) => {
     const vmid = Number(req.params.vmid);
-    const row = Number.isInteger(vmid) ? ownedByUser.get(vmid, req.account.id) : null;
+    const row = req.accessRow;
     if (!row) throw notFound();
     if (badSshKeys(req.body.sshKeys)) return reply.code(400).send({ error: SSH_KEY_ERROR });
     await reinstallServer(req, row, { ...req.body });
@@ -242,7 +258,7 @@ export default async function vmRoutes(app) {
   // ---- Windows updates ---------------------------------------------------------
   app.get('/api/vms/:vmid/updates', async (req) => {
     const vmid = Number(req.params.vmid);
-    const row = Number.isInteger(vmid) ? ownedByUser.get(vmid, req.account.id) : null;
+    const row = req.accessRow;
     if (!row) throw notFound();
     await refreshForServer(row);            // fresh progress while someone watches
     return updateInfo(row);
@@ -263,7 +279,7 @@ export default async function vmRoutes(app) {
     },
   }, async (req, reply) => {
     const vmid = Number(req.params.vmid);
-    const row = Number.isInteger(vmid) ? ownedByUser.get(vmid, req.account.id) : null;
+    const row = req.accessRow;
     if (!row) throw notFound();
     return reply.code(202).send(await startUpdates(req, row, req.body));
   });
@@ -271,7 +287,7 @@ export default async function vmRoutes(app) {
   // The customer's one self-service extension (if allowed for them)
   app.post('/api/vms/:vmid/extend', { config: { rateLimit: { max: 5, timeWindow: '1 hour' } } }, async (req) => {
     const vmid = Number(req.params.vmid);
-    const row = Number.isInteger(vmid) ? ownedByUser.get(vmid, req.account.id) : null;
+    const row = req.accessRow;
     if (!row) throw notFound();
     return customerExtend(req, row);
   });
@@ -293,7 +309,7 @@ export default async function vmRoutes(app) {
     },
   }, async (req) => {
     const vmid = Number(req.params.vmid);
-    const row = Number.isInteger(vmid) ? ownedByUser.get(vmid, req.account.id) : null;
+    const row = req.accessRow;
     if (!row) throw notFound();
     return resizeServer(req, row, req.body);
   });
@@ -302,7 +318,7 @@ export default async function vmRoutes(app) {
     config: { rateLimit: { max: 10, timeWindow: '10 minutes' } },
   }, async (req, reply) => {
     const vmid = Number(req.params.vmid);
-    const row = Number.isInteger(vmid) ? ownedByUser.get(vmid, req.account.id) : null;
+    const row = req.accessRow;
     if (!row) throw notFound();
     if (!row.created_by_customer) {
       return reply.code(403).send({ error: 'This server was set up for you by your provider. Contact support to cancel it.' });
@@ -319,12 +335,12 @@ export default async function vmRoutes(app) {
   const FILEPATH = { type: 'string', maxLength: 8192, pattern: '^[A-Za-z0-9+/=]*$' };
 
   app.get('/api/vms/:vmid/backups', async (req) => {
-    const { row, guest } = await ownedGuest(req);
+    const { row, guest } = await accessibleGuest(req);
     return backupInfo(row, guest);
   });
 
   app.post('/api/vms/:vmid/backups', { config: { rateLimit: { max: 10, timeWindow: '1 hour' } } }, async (req, reply) => {
-    const { row, guest } = await ownedGuest(req);
+    const { row, guest } = await accessibleGuest(req);
     return reply.code(202).send(await startBackup(req, row, guest));
   });
 
@@ -332,7 +348,7 @@ export default async function vmRoutes(app) {
     config: { rateLimit: { max: 30, timeWindow: '10 minutes' } },
     schema: { querystring: { type: 'object', required: ['id'], properties: { id: VOLID } } },
   }, async (req, reply) => {
-    const { row, guest } = await ownedGuest(req);
+    const { row, guest } = await accessibleGuest(req);
     await deleteBackup(req, row, guest, req.query.id);
     return reply.code(204).send();
   });
@@ -346,7 +362,7 @@ export default async function vmRoutes(app) {
       },
     },
   }, async (req, reply) => {
-    const { row, guest } = await ownedGuest(req);
+    const { row, guest } = await accessibleGuest(req);
     return reply.code(202).send(await startRestore(req, row, guest, { volid: req.body.id, backupFirst: req.body.backupFirst, start: req.body.start }));
   });
 
@@ -366,7 +382,7 @@ export default async function vmRoutes(app) {
       },
     },
   }, async (req) => {
-    const { row } = await ownedGuest(req);
+    const { row } = await accessibleGuest(req);
     return { schedule: setSchedule(req, row, req.body) };
   });
 
@@ -375,7 +391,7 @@ export default async function vmRoutes(app) {
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
     schema: { querystring: { type: 'object', required: ['id'], properties: { id: VOLID, path: FILEPATH } } },
   }, async (req) => {
-    const { row, guest } = await ownedGuest(req);
+    const { row, guest } = await accessibleGuest(req);
     return listFiles(row, guest, req.query.id, req.query.path);
   });
 
@@ -388,7 +404,7 @@ export default async function vmRoutes(app) {
       },
     },
   }, async (req, reply) => {
-    const { row, guest } = await ownedGuest(req);
+    const { row, guest } = await accessibleGuest(req);
     const isFolder = req.query.folder === '1';
     const { res, filename } = await downloadFile(row, guest, req.query.id, req.query.path, isFolder);
     audit(req, row.vmid, 'backup_file_download', { backup: req.query.id, file: Buffer.from(req.query.path, 'base64').toString('utf8').slice(0, 300) });
@@ -426,7 +442,7 @@ export default async function vmRoutes(app) {
 
   // Detail view
   app.get('/api/vms/:vmid', async (req) => {
-    const { row, guest, path } = await ownedGuest(req);
+    const { row, guest, path } = await accessibleGuest(req);
     const [status, cfg] = await Promise.all([
       pve.get(`${path}/status/current`),
       pve.get(`${path}/config`),
@@ -450,8 +466,14 @@ export default async function vmRoutes(app) {
       }
     }
 
+    const permissions = await capabilities(req, row, guest);
     return {
       ...summarize(row, { ...guest, ...status, maxcpu: status.cpus ?? guest.maxcpu }),
+      permissions,
+      resizeLimits: row.access_managed && permissions.includes('resize')
+        ? cloneRules(req).find((r) => r.id === JSON.parse(row.spec ?? '{}').accessRuleId)?.clone.limits ?? null : null,
+      deletable: row.user_id === req.account.id && !!row.created_by_customer && permissions.includes('delete'),
+      reinstallable: row.user_id === req.account.id && !!row.created_by_customer && permissions.includes('reinstall'),
       os: cfg.ostype ?? null,          // raw Proxmox ostype, e.g. "win11", "l26"
       osFamily: osOf(row, cfg.ostype),  // 'windows' | 'linux' | null
       // for the reinstall form: current image and disk size
@@ -463,7 +485,7 @@ export default async function vmRoutes(app) {
       ipconfig: cfg.ipconfig0 ?? cfg.net0 ?? null,
       ips,
       pendingSize,
-      resizable: !!row.created_by_customer,
+      resizable: row.user_id === req.account.id && !!row.created_by_customer && permissions.includes('resize'),
       netin: status.netin ?? 0,
       netout: status.netout ?? 0,
     };
@@ -473,7 +495,7 @@ export default async function vmRoutes(app) {
   app.post('/api/vms/:vmid/power/:action', {
     config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
   }, async (req, reply) => {
-    const { row, guest, path } = await ownedGuest(req);
+    const { row, guest, path } = await accessibleGuest(req);
     const { action } = req.params;
     if (!POWER_ACTIONS[guest.type].includes(action)) {
       return reply.code(400).send({ error: `Unsupported action "${action}"` });
@@ -487,7 +509,7 @@ export default async function vmRoutes(app) {
 
   // Usage graphs
   app.get('/api/vms/:vmid/rrd', async (req, reply) => {
-    const { path } = await ownedGuest(req);
+    const { path } = await accessibleGuest(req);
     const timeframe = req.query.timeframe ?? 'hour';
     if (!TIMEFRAMES.includes(timeframe)) {
       return reply.code(400).send({ error: 'timeframe must be hour, day, week or month' });
@@ -507,7 +529,7 @@ export default async function vmRoutes(app) {
 
   // Snapshots
   app.get('/api/vms/:vmid/snapshots', async (req) => {
-    const { path } = await ownedGuest(req);
+    const { path } = await accessibleGuest(req);
     const list = await pve.get(`${path}/snapshot`);
     return list
       .filter((s) => s.name !== 'current')
@@ -534,7 +556,7 @@ export default async function vmRoutes(app) {
       },
     },
   }, async (req, reply) => {
-    const { guest, path } = await ownedGuest(req);
+    const { guest, path } = await accessibleGuest(req);
     const { name, description = '', includeRam = false } = req.body;
     if (!SNAPSHOT_NAME.test(name)) {
       return reply.code(400).send({
@@ -564,14 +586,14 @@ export default async function vmRoutes(app) {
   });
 
   app.post('/api/vms/:vmid/snapshots/:name/rollback', async (req, reply) => {
-    const { guest, path } = await ownedGuest(req);
+    const { guest, path } = await accessibleGuest(req);
     if (!SNAPSHOT_NAME.test(req.params.name)) return reply.code(400).send({ error: 'Invalid snapshot name' });
     const upid = await pve.post(`${path}/snapshot/${req.params.name}/rollback`);
     return recordTask(req, guest, upid, 'snapshot_rollback');
   });
 
   app.delete('/api/vms/:vmid/snapshots/:name', async (req, reply) => {
-    const { guest, path } = await ownedGuest(req);
+    const { guest, path } = await accessibleGuest(req);
     if (!SNAPSHOT_NAME.test(req.params.name)) return reply.code(400).send({ error: 'Invalid snapshot name' });
     const upid = await pve.del(`${path}/snapshot/${req.params.name}`);
     return recordTask(req, guest, upid, 'snapshot_delete');
@@ -581,6 +603,7 @@ export default async function vmRoutes(app) {
   app.get('/api/tasks/:upid', async (req) => {
     const task = findTask.get(req.params.upid, req.account.id);
     if (!task) throw notFound();
+    await authorizedRow(req, task.vmid, 'view');
     const status = await pve.get(
       `/nodes/${encodeURIComponent(task.node)}/tasks/${encodeURIComponent(task.upid)}/status`
     );
