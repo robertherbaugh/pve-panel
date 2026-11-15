@@ -141,7 +141,7 @@ test('customer deletion shows resource blockers and requires explicit confirmati
   const blocked = page.getByRole('dialog', { name: `Delete customer ${dev.name}`, exact: true });
   await expect(blocked).toContainText('Assigned VMs: 1');
   await expect(blocked.getByRole('button', { name: 'Delete customer', exact: true })).toBeDisabled();
-  await expect(blocked.getByLabel('Type customer ID to confirm')).toBeDisabled();
+  await expect(blocked.getByLabel('Customer name confirmation')).toBeDisabled();
   await blocked.getByRole('button', { name: 'Cancel', exact: true }).click();
 
   const c = (await admin.post('/api/admin/customers', {
@@ -159,11 +159,15 @@ test('customer deletion shows resource blockers and requires explicit confirmati
   await expect(row).toBeVisible();
   await row.getByRole('button', { name: 'Delete', exact: true }).click();
   const confirm = d.getByRole('button', { name: 'Delete customer', exact: true });
-  await expect(d.getByLabel('Type customer ID to confirm')).toBeEnabled();
+  await expect(d.getByLabel('Customer name confirmation')).toBeEnabled();
   await expect(confirm).toBeDisabled();
-  await d.getByLabel('Type customer ID to confirm').fill('wrong-customer');
+  await d.getByLabel('Customer name confirmation').fill('wrong-customer');
   await expect(confirm).toBeDisabled();
-  await d.getByLabel('Type customer ID to confirm').fill(c.slug);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await d.getByRole('button', { name: 'Copy customer name', exact: true }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(c.name);
+  await expect(confirm).toBeDisabled();
+  await d.getByLabel('Customer name confirmation').fill(c.name);
   await expect(confirm).toBeEnabled();
   if (process.env.CUSTOMER_DELETE_SCREENSHOT)
     await page.screenshot({ path: process.env.CUSTOMER_DELETE_SCREENSHOT, fullPage: true });

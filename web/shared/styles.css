@@ -955,6 +955,11 @@ dialog.access-rule-modal { width: min(900px, calc(100vw - 32px)); max-width: non
 .access-editor fieldset { min-width: 0; padding: 18px; margin: 0; border: 1px solid var(--line); border-radius: var(--r-lg); }
 .access-editor fieldset legend { font-weight: 650; padding: 0 7px; }
 .access-editor .grid-2 { gap: 18px; }
+.customer-delete-confirmation { display: grid; gap: 10px; min-width: 0; }
+.customer-delete-confirmation .customer-delete-instruction { margin: 0; }
+.customer-confirmation-copy.btn { max-width: 100%; padding: 6px 10px; background: var(--surface-2); border-radius: var(--r-md); vertical-align: middle; font-weight: 600; }
+.customer-confirmation-copy svg { flex-shrink: 0; }
+.customer-confirmation-copy span { overflow-wrap: anywhere; text-align: left; }
 .access-more-operations { margin-top: 14px; }
 .access-more-operations summary { cursor: pointer; color: var(--muted); font-weight: 600; }
 .access-more-operations[open] summary { margin-bottom: 14px; }
