@@ -1,9 +1,10 @@
+import { renderCustomerBilling } from './billing.js';
 import {renderRetainedBackups} from './retained-backups.js';
 import { configureHa } from './compute-ha.js';
 import { renderComputeServices } from './compute-services.js';
 import { renderSshKeys } from './ssh-keys.js';
 import {
-  $, esc, api, toast, fail, confirmAction, promptText, generatePassword,
+  $, esc, loading, api, toast, fail, confirmAction, promptText, generatePassword,
   bytes, pct, duration, SignedOut, setUnauthorizedHandler,
 } from '/shared/ui.js';
 import { icon, osIcon, brandMark, applyBrand } from '/shared/icons.js';
@@ -158,10 +159,12 @@ function renderList() {
     state.account.canCreate
       ? `<button class="nav-item" id="new-server" aria-current="${state.view === 'create'}">${icon('plus')}<span>New server</span></button>` : '',
     state.account.customer?.role==='admin' ? `<button class="nav-item" id="customer-members">${icon('users')}<span>Customer members</span></button>` : '',
+    state.account.customer?.role === 'admin' ? `<button class="nav-item" id="nav-billing" aria-current="${state.view === 'billing'}">${icon('layers')}<span>Billing</span></button>` : '',
     state.account.vpn?.enabled
       ? `<button class="nav-item" id="vpn-access" aria-current="${state.view === 'vpn'}">${icon('shield')}<span>VPN access</span></button>` : '',
   ].join('');
 
+  $('#nav-billing')?.addEventListener('click', openBilling);
   $('#customer-members')?.addEventListener('click',()=>manageCustomerMembers({api,esc,toast,fail,confirmAction}));
   $('#vm-count').textContent = state.vms.length ? String(state.vms.length) : '';
   $('#vm-list').innerHTML = state.vms.length ? state.vms.map((vm) => `
@@ -427,7 +430,7 @@ function renderOverview(body) {
           `<button data-tf="${tf}" aria-pressed="${state.timeframe === tf}">${label}</button>`).join('')}
       </div>
     </div>
-    <div class="charts" id="charts"><p class="muted">Loading graphs…</p></div>
+    <div class="charts" id="charts"><p class="muted" role="status">${loading('Loading graphs…')}</p></div>
     ${vm.reinstallable && state.account.canCreate ? `
       <div class="danger-zone">
         <div>
@@ -512,7 +515,7 @@ function chart(title, current, series, fixedMax, legend) {
 }
 
 async function renderSnapshots(body) {
-  body.innerHTML = '<p class="muted">Loading snapshots…</p>';
+  body.innerHTML = `<p class="muted" role="status">${loading('Loading snapshots…')}</p>`;
   const vmid = state.selected;
   let snaps;
   try { snaps = await api(`/api/vms/${vmid}/snapshots`); } catch (err) { return fail(err); }
@@ -814,7 +817,7 @@ async function openCreate() {
   state.view = 'create';
   history.replaceState(null, '', '#new');
   renderList();
-  $('#detail').innerHTML = '<div class="detail-inner"><p class="muted">Loading…</p></div>';
+  $('#detail').innerHTML = `<div class="detail-inner"><p class="muted" role="status">${loading('Loading…')}</p></div>`;
   try {
     const [account, templates, saved] = await Promise.all([api('/api/account'), api('/api/templates'), api('/api/ssh-keys')]);
     state.sshKeys = saved.keys;
@@ -1148,7 +1151,7 @@ function scheduleFromUtc(s) {
 async function renderBackups(body) {
   const vmid = state.selected;
   if (state.browse) return renderBrowse(body);
-  if (!body.querySelector('.backups')) body.innerHTML = '<p class="muted">Loading backups…</p>';
+  if (!body.querySelector('.backups')) body.innerHTML = `<p class="muted" role="status">${loading('Loading backups…')}</p>`;
   let b;
   try { b = await api(`/api/vms/${vmid}/backups`); } catch (err) { body.innerHTML = ''; return fail(err); }
   if (vmid !== state.selected || state.tab !== 'backups' || state.view !== 'server' || state.browse) return;
@@ -1420,7 +1423,7 @@ async function openResize() {
   const vm = state.detail;
   if (!vm) return;
   state.view = 'resize';
-  $('#detail').innerHTML = '<div class="detail-inner"><p class="muted">Loading…</p></div>';
+  $('#detail').innerHTML = `<div class="detail-inner"><p class="muted" role="status">${loading('Loading…')}</p></div>`;
   try {
     state.account = await api('/api/account'); // fresh plan usage
     if (state.view === 'resize') renderResize(vm);
@@ -1549,7 +1552,7 @@ async function openReinstall() {
   if (!vm) return;
   state.detail = vm;
   state.view = 'reinstall';
-  $('#detail').innerHTML = '<div class="detail-inner"><p class="muted">Loading…</p></div>';
+  $('#detail').innerHTML = `<div class="detail-inner"><p class="muted" role="status">${loading('Loading…')}</p></div>`;
   try {
     const [templates, saved] = await Promise.all([api('/api/templates'), api('/api/ssh-keys')]);
     state.templates = templates; state.sshKeys = saved.keys;
@@ -1735,7 +1738,7 @@ async function deleteServer(vm) {
   });
   if (answer !== String(vm.vmid)) return;
   try {
-    const { removed } = await api(`/api/vms/${vm.vmid}`, { method: 'DELETE' });
+    const { removed } = await api(`/api/vms/${vm.vmid}`, { method: 'DELETE', body: { confirmVmid: vm.vmid } });
     toast(removed ? `${vm.name} removed` : `Deleting ${vm.name}`);
     state.account = await api('/api/account');
     await loadList();
@@ -1800,7 +1803,7 @@ async function openVpn() {
   state.newDevice = null;
   history.replaceState(null, '', '#vpn');
   renderList();
-  $('#detail').innerHTML = '<div class="detail-inner"><p class="muted">Loading…</p></div>';
+  $('#detail').innerHTML = `<div class="detail-inner"><p class="muted" role="status">${loading('Loading…')}</p></div>`;
   await loadVpn();
 }
 
@@ -1988,6 +1991,13 @@ $('#detail').addEventListener('submit', (e) => {
   submitCreate(e.target);
 });
 
+function openBilling() {
+  if (state.account.customer?.role !== 'admin') return;
+  state.view = 'billing'; state.selected = null;
+  history.replaceState(null, '', '#billing');
+  renderList(); renderCustomerBilling($('#detail'));
+}
+
 // ---------- account ----------------------------------------------------------
 function openAccount() {
   state.view = 'account';
@@ -2039,6 +2049,8 @@ async function startApp(me) {
 
   if (location.hash === '#new' && state.account.canCreate) {
     await openCreate();
+  } else if (location.hash === '#billing' && state.account.customer?.role === 'admin') {
+    openBilling();
   } else if (location.hash === '#account') {
     openAccount();
   } else if (location.hash === '#vpn' && state.account.vpn?.enabled) {

@@ -230,6 +230,9 @@ export function customerDeletionPlan(id) {
     db.prepare(`SELECT count(*) AS n FROM ${table} WHERE customer_id=? ${condition}`).get(id).n;
   const optionalCount = (table, condition) => db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table) ? count(table, condition) : 0;
   const blockers = [
+    ['Active Stripe subscriptions', optionalCount('billing_customers', "AND subscription_id IS NOT NULL AND status NOT IN ('canceled','incomplete_expired')")],
+    ['Unfinished Stripe Checkout', optionalCount('billing_customers', 'AND (checkout_session_id IS NOT NULL OR checkout_request IS NOT NULL)')],
+    ['Pending server deletion', optionalCount('vm_deletions', 'AND finished_at IS NULL')],
     ['Compute operations', optionalCount('compute_operations', "AND state NOT IN ('complete','cancelled')")],
     ['Compute allocations', optionalCount('compute_allocations', 'AND ended_at IS NULL')],
     ['Reserved backup storage', optionalCount('compute_backup_reservations', "AND state!='released'")],

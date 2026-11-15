@@ -6,6 +6,8 @@ export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 }[c]));
 
+export const loading = (message = 'Loading…') => `<span class="loading-state"><span class="spinner" aria-hidden="true"></span><span>${esc(message)}</span></span>`;
+
 export class SignedOut extends Error {}
 
 let onUnauthorized = () => {};

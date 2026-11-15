@@ -9,6 +9,15 @@ fs.mkdirSync(path.dirname(path.resolve(config.dbPath)), { recursive: true });
 // Node's built-in SQLite: no native build step needed on any platform.
 export const db = new DatabaseSync(config.dbPath);
 db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+// Deletions keep their task identity independently of a VM assignment.
+db.exec(`CREATE TABLE IF NOT EXISTS vm_deletions (
+  id TEXT PRIMARY KEY, vmid INTEGER NOT NULL, customer_id INTEGER, user_id INTEGER NOT NULL,
+  node TEXT NOT NULL, type TEXT NOT NULL, name TEXT, state TEXT NOT NULL,
+  upid TEXT, error TEXT, admin INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')), finished_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS vm_deletion_active ON vm_deletions(vmid) WHERE finished_at IS NULL;`);
+
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (

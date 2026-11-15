@@ -171,7 +171,7 @@ export default async function vmRoutes(app) {
     return Promise.all(rows.map(async (row) => {
       const permissions = await capabilities(req, row, guests.get(row.vmid));
       return { ...summarize(row, guests.get(row.vmid)), permissions,
-        deletable: !!row.created_by_customer && permissions.includes('delete'),
+        deletable: permissions.includes('delete'),
         reinstallable: !!row.created_by_customer && permissions.includes('reinstall') };
     }));
   });
@@ -344,9 +344,7 @@ export default async function vmRoutes(app) {
     const vmid = Number(req.params.vmid);
     const row = req.accessRow;
     if (!row) throw notFound();
-    if (!row.created_by_customer) {
-      return reply.code(403).send({ error: 'This server was set up for you by your provider. Contact support to cancel it.' });
-    }
+    if (!row.created_by_customer && req.body?.confirmVmid !== vmid) return reply.code(400).send({ error: 'Confirm the VM ID to delete this imported server' });
     if (row.state === 'creating' || row.state === 'deleting') {
       return reply.code(409).send({ error: 'Wait until the current operation has finished' });
     }
@@ -497,7 +495,7 @@ export default async function vmRoutes(app) {
       offering: allocationFor(row.vmid)?.offering ?? null,
       resizeLimits: row.access_managed && permissions.includes('resize')
         ? cloneRules(req).find((r) => r.id === JSON.parse(row.spec ?? '{}').accessRuleId)?.clone.limits ?? null : null,
-      deletable: !!row.created_by_customer && permissions.includes('delete'),
+      deletable: permissions.includes('delete'),
       reinstallable: !!row.created_by_customer && permissions.includes('reinstall'),
       os: cfg.ostype ?? null,          // raw Proxmox ostype, e.g. "win11", "l26"
       osFamily: osOf(row, cfg.ostype),  // 'windows' | 'linux' | null
@@ -531,6 +529,7 @@ export default async function vmRoutes(app) {
       return reply.code(403).send({ error: 'This server has expired. Extend it to use it again.' });
     }
     const ha=await catalogPower(req,row,guest,action);
+    assertComputeIdle(row.vmid);
     const upid = ha ? ha.upid : await pve.post(`${path}/status/${action}`);
     return recordTask(req, guest, upid, `power_${action}`);
   });

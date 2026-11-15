@@ -1,3 +1,4 @@
+import { loading } from '/shared/ui.js';
 import { sectionTabs } from './sections.js';
 import { resourcePicker } from './resource-picker.js';
 
@@ -35,7 +36,7 @@ export function renderAccessPolicy(container, { data, api, esc, toast, fail, con
       <tbody data-access-rules></tbody>
     </table></div>
     <p data-policy-error class="form-error" role="alert"></p>
-    <div class="access-inventory-status"><p class="muted small" data-inventory-status role="status">Loading Proxmox resources…</p><button type="button" class="btn" data-refresh-resources>Refresh Proxmox resources</button></div>
+    <div class="access-inventory-status"><p class="muted small" data-inventory-status role="status">${loading('Loading Proxmox resources…')}</p><button type="button" class="btn" data-refresh-resources>Refresh Proxmox resources</button></div>
     <p class="muted small">SSO group changes take effect after a fresh sign-in. Shared access expires after the configured authorization lifetime, including open consoles.</p>`;
   sectionTabs(container, 'Permissions', [
     { id: 'sets', label: 'Permission sets', nodes: [container.querySelector('.access-table-head'), container.querySelector('.table-wrap')] },
@@ -75,7 +76,7 @@ export function renderAccessPolicy(container, { data, api, esc, toast, fail, con
   async function refreshResources() {
     const button = container.querySelector('[data-refresh-resources]');
     const status = container.querySelector('[data-inventory-status]');
-    button.disabled = true; status.textContent = 'Loading Proxmox resources…';
+    button.disabled = true; status.innerHTML = loading('Loading Proxmox resources…');
     try {
       const inventory = await api('/api/admin/access-policy/resources');
       if (!active) return;

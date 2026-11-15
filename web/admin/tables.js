@@ -1,3 +1,5 @@
+import { loading } from '/shared/ui.js';
+
 // Shared controls for every admin inventory, including tables loaded in dialogs.
 // Local rows are moved/hidden, never recreated, so editing and action identity survive.
 const preferences = new Map();
@@ -107,7 +109,8 @@ function enhance(table, api) {
       c.th.setAttribute('aria-sort', state.sort === c.key ? (state.order === 'asc' ? 'ascending' : 'descending') : 'none');
       c.sortArrow.textContent = state.sort === c.key ? (state.order === 'asc' ? ' ↑' : ' ↓') : ' ↕';
     });
-    status.textContent = pending ? 'Loading…' : `${total ? (state.page - 1) * state.pageSize + 1 : 0}–${Math.min(state.page * state.pageSize, total)} of ${total} results`;
+    if (pending) status.innerHTML = loading();
+    else status.textContent = `${total ? (state.page - 1) * state.pageSize + 1 : 0}–${Math.min(state.page * state.pageSize, total)} of ${total} results`;
     table.setAttribute('aria-busy', String(pending));
   }
   function sync() {
@@ -140,6 +143,7 @@ function enhance(table, api) {
     visible.forEach(r => { r.hidden = false; });
     empty.hidden = !!total; if (!empty.isConnected) body.append(empty);
     controls();
+    table.dispatchEvent(new CustomEvent('admin-table-updated'));
   }
   async function update() {
     clearTimeout(timer);
@@ -177,7 +181,7 @@ function enhance(table, api) {
   clear.onclick = () => { state.q = ''; state.filters = {}; search.value = ''; filters.querySelectorAll('input').forEach(i => { i.value = ''; }); change(); };
   const refresh = () => update();
   table.addEventListener('admin-table-refresh', refresh);
-  const input = () => { if (!remote) local(); };
+  const input = event => { if (!remote && !event.target.hasAttribute('data-table-selection')) local(); };
   table.addEventListener('change', input);
   if (remote) update(); else sync();
   return { sync, destroy() { destroyed = true; ++revision; clearTimeout(timer); table.removeEventListener('admin-table-refresh', refresh); table.removeEventListener('change', input); } };

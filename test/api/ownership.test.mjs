@@ -46,8 +46,8 @@ test('the owner can control the server and take snapshots', async () => {
   await waitFor(async () => (await lena.get('/api/vms/101/snapshots')).json?.some((s) => s.name === 'before_update'), { what: 'snapshot' });
 });
 
-test('servers assigned by the admin cannot be deleted, reinstalled or resized by the customer', async () => {
-  assert.equal((await lena.del('/api/vms/101')).status, 403);
+test('imported servers require explicit delete confirmation and retain reinstall and resize restrictions', async () => {
+  assert.equal((await lena.del('/api/vms/101')).status, 400);
   assert.equal((await lena.post('/api/vms/101/reinstall', { templateId: 9000, username: 'ops', password: 'a-long-password-1' })).status, 403);
   assert.equal((await lena.post('/api/vms/101/resize', { cores: 4 })).status, 403);
 });

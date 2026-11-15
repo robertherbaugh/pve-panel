@@ -119,7 +119,7 @@ test('customer editor, memberships and VM assignment support shared customers an
   await page.goto(stack.adminUrl);
   await page.getByRole('button', { name: 'Users', exact: true }).click();
   const user = page.locator(`[data-user="${bob.id}"]`);
-  await user.getByRole('button', { name: 'Disable', exact: true }).click();
+  await user.getByRole('button', { name: `Disable user for ${bob.email}`, exact: true }).click();
   await page.locator('#confirm-ok').click();
   await expect(user).toContainText('Disabled');
   expect(

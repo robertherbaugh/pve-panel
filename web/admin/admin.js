@@ -1,6 +1,8 @@
+import { renderBilling } from './billing.js';
 import { ACTION_LABELS } from '/shared/audit-actions.js';
 import { sectionTabs, markedSections } from './sections.js';
 import { icon } from '/shared/icons.js';
+import { loading } from '/shared/ui.js';
 import { renderSecurity } from '/shared/twofa.js';
 import { renderPasskeys } from '/shared/passkeys.js';
 import { applyScheme } from '/shared/icons.js';
@@ -34,6 +36,7 @@ const NAV_GROUPS = [
     ['permissions', 'Permissions', 'shield', 'Map SSO groups and entitlements to permitted operations.'],
   ] },
   { label: 'Administration', items: [
+    ['billing', 'Billing', 'layers', 'Manage reservation prices, subscriptions and customer invoices.'],
     ['activity', 'Activity', 'pulse', 'Review recent account and server activity.'],
     ['settings', 'Settings', 'gear', 'Configure branding, communication and customer services.'],
     ['setup', 'Setup check', 'check', 'Check the connection, permissions and platform configuration.'],
@@ -51,7 +54,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   let loadRevision = 0;
   const st = {
     tab: 'servers', settingsTab: 'branding', users: [], vms: [], newUser: null,
-    templates: [], storages: {}, vpn: null,
+    templates: [], storages: {}, vpn: null, selectedServers: new Set(),
   };
   const gb = (mb) => `${+(mb / 1024).toFixed(1)} GB`;
 
@@ -61,7 +64,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   async function load({ quiet = false } = {}) {
     const revision = ++loadRevision;
     const body = root.querySelector('#admin-body');
-    if (!quiet) body.innerHTML = '<p class="muted">Loading…</p>';
+    if (!quiet) body.innerHTML = `<p class="muted" role="status">${loading()}</p>`;
     try {
       if (st.tab === 'servers') {
         [st.vms, st.users, st.customerData] = await Promise.all([api('/api/admin/vms'), api('/api/admin/users'),api('/api/admin/customers')]);
@@ -89,6 +92,8 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
         [st.computeCatalog, st.customerData] = await Promise.all([
           api('/api/admin/compute-catalog'), api('/api/admin/customers'),
         ]);
+      } else if (st.tab === 'billing') {
+        st.billing = await api('/api/admin/billing');
       } else if (st.tab === 'about') {
         st.about = await api(`/api/admin/about${st.refreshAbout ? '?refresh=1' : ''}`);
         st.refreshAbout = false;
@@ -166,6 +171,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
       data: st.computeCatalog, customers: st.customerData.customers, api, esc, toast, fail,
       onSave: (saved) => { st.computeCatalog = saved; },
     });
+    if (st.tab === 'billing') disposeAccessPolicy = renderBilling(root.querySelector('#admin-body'), { data: st.billing, reload: load });
     if (st.tab === 'vpn') renderVpn();
     if (st.tab === 'activity') renderActivity();
     if (st.tab === 'account') {
@@ -194,23 +200,35 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
         <p class="muted" style="margin:0" id="vm-summary"></p>
 
       </div>
-      <div class="table-wrap">
+      <div class="server-bulk row" role="group" aria-label="Bulk server assignment">
+        <span data-selection-count role="status">0 selected</span>
+        <label>Assign selected to<select data-bulk-customer aria-label="Customer for selected servers"><option value="">Choose customer</option>${st.customerData.customers.filter(c=>c.enabled).map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
+        <button type="button" class="btn primary" data-bulk-assign disabled>Assign selected</button><button type="button" class="btn ghost" data-clear-selection>Clear selection</button>
+        <span class="hint">Selection includes checked servers on other pages and in filtered results.</span>
+      </div>
+      <div class="table-wrap servers-table-wrap">
         <table class="table" data-admin-table="Servers">
           <thead><tr>
-            <th>ID</th><th>Name in Proxmox</th><th>Node</th><th>Customer</th><th>Name shown to customer</th><th><span class="sr-only">Actions</span></th>
+            <th data-sortable="false"><input type="checkbox" data-table-selection data-select-page aria-label="Select servers on this page"></th><th>ID</th><th>Name in Proxmox</th><th>Node</th><th>Customer</th><th>Name shown to customer</th><th class="server-actions">Actions</th>
           </tr></thead>
           <tbody id="vm-rows"></tbody>
         </table>
       </div>
       <p class="muted small">Changes save immediately. Customers see a server as soon as it's assigned to them.</p>`;
     renderServerRows();
+    root.querySelector('[data-admin-table="Servers"]').addEventListener('admin-table-updated', updateServerSelection);
+    root.querySelector('[data-bulk-customer]').onchange = updateServerSelection;
+    root.querySelector('[data-bulk-assign]').onclick = bulkAssign;
+    root.querySelector('[data-clear-selection]').onclick = () => { st.selectedServers.clear(); updateServerSelection(); };
     const host = root.querySelector('#admin-body');
     sectionTabs(host, 'Servers', [{ id: 'inventory', label: 'Inventory', nodes: [...host.children] }]);
   }
 
-  /** Power and delete buttons, only for servers assigned to a customer. */
+  /** Applicable admin actions also work before customer assignment. */
   function serverActions(v) {
-    if (!v.userId || v.status === 'missing') return '';
+    if (v.status === 'missing') return '';
+    if (v.deletion?.state === 'review') return '<span class="tag warn">Deletion needs review</span>';
+    if (v.protected) return '<span class="muted small">Protected</span>';
     const idle = v.state === 'ready' || v.state === 'failed';
     const on = v.status === 'running';
     const b = (action, ic, label, enabled, cls = '') =>
@@ -220,7 +238,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
       ${b('shutdown', 'power', 'Shut down', idle && on && v.state === 'ready')}
       ${b('reboot', 'restart', 'Restart', idle && on && v.state === 'ready')}
       ${b('stop', 'stop', 'Force stop', idle && on && v.state === 'ready')}
-      ${b('expiry', 'clock', 'Expiry', true)}
+      ${v.userId ? b('expiry', 'clock', 'Expiry', true) : ''}
       ${b('delete', 'trash', 'Delete server', idle, 'danger')}
     </span>`;
   }
@@ -254,13 +272,13 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   async function serverAction(vm, action) {
     if (action === 'expiry') { editServerExpiry(vm); return; }
     if (action === 'delete') {
-      const answer = await promptText(`Type ${vm.vmid} to delete “${vm.name}” of ${vm.owner}`, {
+      const answer = await promptText(`Type ${vm.vmid} to delete “${vm.name}” ${vm.customerName ? `for ${vm.customerName}` : '(not assigned)'}`, {
         hint: 'The server is stopped if needed and deleted with its disks and snapshots. The customer loses it immediately.',
         okLabel: 'Delete server', pattern: String(vm.vmid), danger: true,
       });
       if (answer !== String(vm.vmid)) return;
       try {
-        await api(`/api/admin/vms/${vm.vmid}/server`, { method: 'DELETE' });
+        await api(`/api/admin/vms/${vm.vmid}/server`, { method: 'DELETE', body: { confirmVmid: vm.vmid } });
         toast(`Deleting ${vm.name}`);
         await load({ quiet: true });
         watch(() => !st.vms.some((x) => x.vmid === vm.vmid && x.state === 'deleting'));
@@ -296,6 +314,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
 
     root.querySelector('#vm-rows').innerHTML = rows.length ? rows.map((v) => `
       <tr data-vmid="${v.vmid}">
+        <td><input type="checkbox" data-table-selection data-select-server value="${v.vmid}" aria-label="Select server ${v.vmid} ${esc(v.name)}" ${st.selectedServers.has(v.vmid) ? 'checked' : ''} ${v.status === 'missing' || v.protected || ['creating','deleting'].includes(v.state) ? 'disabled' : ''}></td>
         <td class="mono">${v.vmid}</td>
         <td>
           <span class="led ${v.status === 'running' ? 'running' : ''}" title="${esc(v.status)}"></span>
@@ -318,9 +337,37 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
           <input data-label value="${esc(v.label ?? '')}" placeholder="${esc(v.name || `Server ${v.vmid}`)}"
                  maxlength="80" aria-label="Name shown to customer for server ${v.vmid}" ${v.userId ? '' : 'disabled'}>
         </td>
-        <td class="actions">${serverActions(v)}</td>
+        <td class="actions server-actions">${serverActions(v)}</td>
       </tr>`).join('')
-      : `<tr><td colspan="6" class="muted">No servers in the cluster.</td></tr>`;
+      : `<tr><td colspan="7" class="muted">No servers in the cluster.</td></tr>`;
+    updateServerSelection();
+  }
+
+  function pageServerCheckboxes() {
+    return [...root.querySelectorAll('#vm-rows tr:not([hidden]) [data-select-server]:not(:disabled)')];
+  }
+  function updateServerSelection() {
+    const count = root.querySelector('[data-selection-count]');
+    if (!count) return;
+    const allowed = new Set(st.vms.filter(v => v.status !== 'missing' && !v.protected && !['creating','deleting'].includes(v.state)).map(v => v.vmid));
+    for (const id of st.selectedServers) if (!allowed.has(id)) st.selectedServers.delete(id);
+    root.querySelectorAll('[data-select-server]').forEach(c => { c.checked = st.selectedServers.has(Number(c.value)); });
+    const visible = pageServerCheckboxes(), selected = visible.filter(c => c.checked).length;
+    const all = root.querySelector('[data-select-page]');
+    all.checked = !!visible.length && selected === visible.length; all.indeterminate = selected > 0 && selected < visible.length; all.disabled = !visible.length;
+    count.textContent = `${st.selectedServers.size} selected`;
+    root.querySelector('[data-bulk-assign]').disabled = !st.selectedServers.size || !root.querySelector('[data-bulk-customer]').value;
+  }
+  async function bulkAssign() {
+    const vmids = [...st.selectedServers], customerId = Number(root.querySelector('[data-bulk-customer]').value);
+    const customer = st.customerData.customers.find(c => c.id === customerId);
+    if (!vmids.length || !customer) return;
+    if (!await confirmAction(`Assign ${vmids.length} selected servers to ${customer.name}? Existing customer assignments will change. Server display names are preserved.`, 'Assign servers')) return;
+    const button = root.querySelector('[data-bulk-assign]'); button.disabled = true;
+    try {
+      const result = await api('/api/admin/vms/assign', { method: 'POST', body: { vmids, customerId } });
+      st.selectedServers.clear(); toast(`${result.assigned} servers assigned to ${result.customerName}`); await load({ quiet: true });
+    } catch (err) { fail(err); updateServerSelection(); }
   }
 
   async function saveAssignment(row) {
@@ -376,17 +423,37 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
         </div>
       </div>` : '';
 
+    const action = (u, attr, label, glyph, danger = false) => `<button type="button" class="icon-btn act${danger ? ' danger' : ''}" ${attr} title="${label}" aria-label="${label} for ${esc(u.email)}">${icon(glyph)}</button>`;
     root.querySelector('#admin-body').innerHTML = `
-      <section data-section="Add user"><h2 class="h2">Add a user</h2><p class="muted">Manage identities here. Add users to organizations from the Customers tab.</p>
+      <div class="section-head"><div><h2 class="h2">Directory</h2><p class="muted">Manage identities here. Add users to organizations from the Customers page.</p></div><button type="button" class="btn primary" data-add-user>${icon('plus')}Add user</button></div>
+      ${note}
+      <div class="table-wrap"><table class="table" data-admin-table="Users"><thead><tr><th>User</th><th>Platform role</th><th>Customers</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+        ${st.users.map(u=>`<tr data-user="${u.id}"><td>${esc(u.email)}${u.id===me.id?' (you)':''}${u.ssoLinked?' <span class="tag">SSO</span>':''}</td><td>${u.isAdmin?'Administrator':'User'}</td><td>${[...new Set(u.customers.map(c=>c.name))].map(n=>`<span class="badge">${esc(n)}</span>`).join(' ')||'<span class="muted">No memberships</span>'}</td><td>${u.disabled?'Disabled':'Active'}</td><td class="actions"><div class="user-actions" role="group" aria-label="Actions for ${esc(u.email)}">${action(u, 'data-twofa', 'Sign-in settings', 'shield')}${action(u, 'data-reset', 'Reset password', 'key')}${u.canCreate ? action(u, 'data-limits', 'Legacy user limits', 'layers') : ''}${u.id!==me.id ? `${action(u, 'data-toggle-admin', u.isAdmin ? 'Remove admin' : 'Make admin', u.isAdmin ? 'shield-minus' : 'shield-plus')}${action(u, 'data-disable-user', u.disabled ? 'Enable user' : 'Disable user', u.disabled ? 'check' : 'ban', !u.disabled)}` : ''}</div></td></tr>`).join('')}
+      </tbody></table></div>`;
+    const host = root.querySelector('#admin-body');
+    sectionTabs(host, 'Users', [{ id: 'directory', label: 'Directory', nodes: [...host.children] }]);
+  }
+
+  function openAddUser() {
+    const existing = root.querySelector('#add-user');
+    if (existing) return;
+    const dialog = document.createElement('dialog');
+    dialog.id = 'add-user';
+    dialog.className = 'user-create-modal';
+    dialog.setAttribute('aria-labelledby', 'add-user-title');
+    dialog.innerHTML = `
       <form id="user-form" class="user-form" autocomplete="off">
+        <div class="section-head"><h2 id="add-user-title" class="h2">Add user</h2><button type="button" class="btn" data-close-add-user>Close</button></div>
+        <p class="muted">Create an identity, then add it to an organization from the Customers page.</p>
+        <div class="grid-2">
         <label>Email <input name="email" type="email" required maxlength="254"></label>
         <label id="pw-field">Password
           <span class="with-button">
-            <input name="password" type="password" required minlength="12" maxlength="200" autocomplete="new-password">
+            <input name="password" type="password" aria-label="Password" required minlength="12" maxlength="200" autocomplete="new-password">
             <button type="button" class="btn" data-generate>Generate</button>
           </span>
         </label>
-        <button class="btn primary">Add user</button>
+        </div>
         <label class="check">
           <input type="checkbox" name="isAdmin">
           <span>Administrator <span class="muted">Can open this area and manage all customers and servers.</span></span>
@@ -403,14 +470,15 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
           <input type="checkbox" name="requireTotp">
           <span>Require two-factor authentication <span class="muted">The user sets up an authenticator app at the first sign-in, before they can do anything else.</span></span>
         </label>
-      </form></section>
-      ${note}
-
-      <section data-section="Directory"><div class="table-wrap"><table class="table" data-admin-table="Users"><thead><tr><th>User</th><th>Platform role</th><th>Customers</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-        ${st.users.map(u=>`<tr data-user="${u.id}"><td>${esc(u.email)}${u.id===me.id?' (you)':''}${u.ssoLinked?' <span class="tag">SSO</span>':''}</td><td>${u.isAdmin?'Administrator':'User'}</td><td>${[...new Set(u.customers.map(c=>c.name))].map(n=>`<span class="badge">${esc(n)}</span>`).join(' ')||'<span class="muted">No memberships</span>'}</td><td>${u.disabled?'Disabled':'Active'}</td><td class="actions"><button class="btn" data-twofa>Sign-in</button><button class="btn" data-reset>Reset password</button>${u.canCreate?'<button class="btn" data-limits>Personal plan</button>':''}${u.id!==me.id?`<button class="btn" data-toggle-admin>${u.isAdmin?'Remove admin':'Make admin'}</button><button class="btn ${u.disabled?'':'danger'}" data-disable-user>${u.disabled?'Enable':'Disable'}</button>`:''}</td></tr>`).join('')}
-      </tbody></table></div></section>`;
-    const host = root.querySelector('#admin-body');
-    sectionTabs(host, 'Users', ['Directory', 'Add user'].map(id => ({ id, label: id, nodes: [host.querySelector(`[data-section="${id}"]`)] })), { before: host.firstElementChild });
+        <p class="form-error" data-create-user-error role="alert"></p>
+        <div class="row end"><button type="button" class="btn" data-close-add-user>Cancel</button><button type="submit" class="btn primary">Add user</button></div>
+      </form>`;
+    root.append(dialog);
+    dialog.querySelectorAll('[data-close-add-user]').forEach(button => { button.onclick = () => dialog.close(); });
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    dialog.addEventListener('cancel', event => { if (dialog.querySelector('[type=submit]').disabled) event.preventDefault(); });
+    dialog.showModal();
+    dialog.querySelector('[name=email]').focus();
   }
 
   function watchDeletions() {
@@ -477,22 +545,35 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   }
 
   async function createUser(form) {
+    const dialog = form.closest('dialog');
+    const button = form.querySelector('[type=submit]');
+    if (button.disabled) return;
     const email = form.email.value.trim();
     const invite = form.invite.checked;
     const password = invite ? undefined : form.password.value;
     const isAdmin = form.isAdmin.checked;
     const requireTotp = form.requireTotp.checked;
     const generated = !invite && form.dataset.generated === password;
-    const button = form.querySelector('.btn.primary');
     button.disabled = true;
+    button.innerHTML = loading('Adding user…');
+    form.querySelector('[data-create-user-error]').textContent = '';
+    form.querySelectorAll('[data-close-add-user]').forEach(b => { b.disabled = true; });
     try {
       const r = await api('/api/admin/users', { method: 'POST', body: { email, password, isAdmin, requireTotp, invite, createPersonalCustomer:false } });
       st.newUser = { email, password: generated ? password : null, invited: r.invited, inviteError: r.inviteError };
-      st.users = await api('/api/admin/users');
-      renderUsers();
+      dialog.close();
+      try { st.users = await api('/api/admin/users'); } catch (err) { fail(err); }
+      if (st.tab === 'users') {
+        renderUsers();
+        root.querySelector('[data-add-user]').focus();
+      }
     } catch (err) {
+      form.querySelector('[data-create-user-error]').textContent = err.message;
       fail(err);
+    } finally {
       button.disabled = false;
+      button.textContent = 'Add user';
+      form.querySelectorAll('[data-close-add-user]').forEach(b => { b.disabled = false; });
     }
   }
 
@@ -500,7 +581,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   function editLimits(user) {
     const dialog = document.getElementById('limits');
     const form = document.getElementById('limits-form');
-    document.getElementById('limits-title').textContent = `Limits and expiry for ${user.email}`;
+    document.getElementById('limits-title').textContent = `Legacy user limits for ${user.email}`;
     form.expiryMode.value = user.expiryMode ?? '';
     form.expiryDays.value = user.expiryDays ?? 14;
     form.expiryDate.value = user.expiryDate ?? '';
@@ -1343,6 +1424,8 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
     const t = e.target.closest('button');
     if (!t) return;
 
+    if (t.hasAttribute('data-add-user')) { openAddUser(); return; }
+
     if (t.dataset.settingsTab) {
       selectSettingsTab(t.dataset.settingsTab);
       return;
@@ -1579,6 +1662,14 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   });
 
   root.addEventListener('change', async (e) => {
+    if (e.target.matches('[data-select-page]')) {
+      for (const c of pageServerCheckboxes()) e.target.checked ? st.selectedServers.add(Number(c.value)) : st.selectedServers.delete(Number(c.value));
+      updateServerSelection(); return;
+    }
+    if (e.target.matches('[data-select-server]')) {
+      e.target.checked ? st.selectedServers.add(Number(e.target.value)) : st.selectedServers.delete(Number(e.target.value));
+      updateServerSelection(); return;
+    }
     if (e.target.matches?.('[data-setup-only]')) {
       st.setupOnlyProblems = e.target.checked;
       renderSetupCheck();

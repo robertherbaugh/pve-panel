@@ -2,7 +2,7 @@
 // interface: the code step at sign-in, the setup wizard (QR code + first code),
 // the recovery codes screen, and the "Account" security panel.
 
-import { api, esc, toast, fail, confirmAction, promptText } from '/shared/ui.js';
+import { api, esc, loading, toast, fail, confirmAction, promptText } from '/shared/ui.js';
 
 const CODE_INPUT = `<input name="code" required inputmode="numeric" autocomplete="one-time-code"
   class="code-input" maxlength="6" pattern="[0-9]{6}" placeholder="000000" aria-label="6-digit code">`;
@@ -171,7 +171,7 @@ export function signInSecondStep(container, { stage, email, onSignedIn, onRestar
 
 /** "Two-factor authentication" section of the account page. */
 export async function renderSecurity(container, { email }) {
-  container.innerHTML = '<p class="muted">Loading…</p>';
+  container.innerHTML = `<p class="muted" role="status">${loading()}</p>`;
   let s;
   try { s = await api('/api/account/2fa'); } catch (err) { container.innerHTML = ''; return fail(err); }
 

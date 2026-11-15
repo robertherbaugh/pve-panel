@@ -1,3 +1,5 @@
+import { requireBillingAccess } from './billing-stripe.js';
+import { assertBillingAccess, billingAccount } from './billing-state.js';
 import { db } from './db.js';
 import { pve, serial } from './pve.js';
 import { computeCatalog, computeProfile } from './compute-catalog.js';
@@ -13,7 +15,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS compute_backup_reservations (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), ended_at TEXT
 )`);
 export const backupReservation = id => db.prepare('SELECT * FROM compute_backup_reservations WHERE job_id=?').get(id);
-export const catalogBackupCustomer = (customerId, vmid) => computeProfile(customerId).catalogEnabled || computeManaged(vmid);
+export const catalogBackupCustomer = (customerId, vmid) => computeProfile(customerId).catalogEnabled || computeManaged(vmid) || !!billingAccount(customerId).required || !!billingAccount(customerId).subscription_id;
 export function backupServiceSelected(customerId, vmid) {
   return !catalogBackupCustomer(customerId, vmid) || computeProfile(customerId).backupServiceEnabled;
 }
@@ -29,6 +31,7 @@ export async function reserveCatalogBackup(job, guest, storage, diskGb) {
   const prior = backupReservation(job.id);
   if (prior) return prior;
   if (!catalogBackupCustomer(job.customer_id, job.vmid)) return null;
+  await requireBillingAccess(job.customer_id, ['backup:basic']);
   return serial(async () => {
     requireBackupService(job.customer_id, job.vmid);
     const catalog = computeCatalog(), profile = computeProfile(job.customer_id);
@@ -45,6 +48,7 @@ export async function reserveCatalogBackup(job, guest, storage, diskGb) {
     if (diskGb + computeHolds + backupDiskHoldsGb(storageKey) + catalog.reserves.diskGb > target.avail / GB) fail('Basic backup storage has insufficient free reservation capacity.');
     if (computeCatalog().revision !== catalog.revision || computeProfile(job.customer_id).revision !== profile.revision) fail('Backup offerings changed. Try again.');
     // No awaits between quota admission and the durable hold.
+    assertBillingAccess(job.customer_id, ['backup:basic']);
     const used = backupUsage(job.customer_id).reservedBytes;
     if (profile.backupLimitGb > 0 && used + diskGb * GB > profile.backupLimitGb * GB) fail('This exceeds the customer’s Basic backup storage limit.');
     db.prepare("INSERT INTO compute_backup_reservations(job_id,customer_id,vmid,node,storage,storage_key,reserved_bytes,state) VALUES(?,?,?,?,?,?,?,'held')")

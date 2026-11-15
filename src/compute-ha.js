@@ -1,3 +1,5 @@
+import { requireBillingAccess } from './billing-stripe.js';
+import { assertBillingAccess } from './billing-state.js';
 import { config } from './config.js';
 import { db, audit } from './db.js';
 import { pve, clusterGuests, guestPath, serial } from './pve.js';
@@ -50,6 +52,8 @@ export async function setCustomerHa(req,row,input) {
   if(a.offering.haEnabled===input.enabled) fail('HA already has this setting');
   if(input.enabled && (!policy.enabled || !policy.infrastructureVerified || !computeProfile(customer.id).haAllowed)) fail('HA is not available for this customer',403);
   if(input.enabled && (input.policyRevision!==policy.revision || input.slaVersion!==policy.slaVersion || input.msaVersion!==policy.msaVersion || input.accept!==true)) fail('Accept the current HA SLA and MSA before enabling this add-on',400);
+  if (input.enabled) await requireBillingAccess(customer.id, ['addon:ha']);
+  if (capacityBusy(customer.id)) fail('Wait until the current compute operation finishes');
   capacityLocks.add(`customer:${customer.id}`);
   try {
     const guest=(await clusterGuests(true)).get(row.vmid);
@@ -83,6 +87,7 @@ export async function setCustomerHa(req,row,input) {
       } else {
         plan={node:guest.node,storage,storageKey:`shared/${storage}`,cores:offering.cores,memoryMb:offering.memoryMb,diskGb:offering.diskGb,pool,offering};
       }
+      if (input.enabled) assertBillingAccess(customer.id, ['addon:ha']);
       return beginOperation({customerId:customer.id,userId:req.account.id,vmid:row.vmid,kind:input.enabled?'ha-enabled':'ha-disabled',plan:{...plan,offering,reserveDiskGb:0,haNodes:input.enabled?policy.nodes:a.offering.haAgreement?.nodes},onReserve:id=>{
         db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Configuring HA',spec=? WHERE vmid=?").run(JSON.stringify({...spec,operationId:id}),row.vmid);
         if(input.enabled) for(const node of policy.nodes) db.prepare("INSERT INTO compute_ha_reservations(vmid,node,cores,memory_mb,state) VALUES(?,?,?,?,'held') ON CONFLICT(vmid,node) DO UPDATE SET cores=excluded.cores,memory_mb=excluded.memory_mb,state='held'").run(row.vmid,node,offering.cores,offering.memoryMb);

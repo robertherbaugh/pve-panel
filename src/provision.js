@@ -1,3 +1,5 @@
+import { requireBillingAccess } from './billing-stripe.js';
+import { assertBillingAccess, billingAccount, offeringCostIncreases } from './billing-state.js';
 import { assertNoHa, runHaOperation } from './compute-ha.js';
 import { runCatalogResize, lifecycleStep, lifecycleGuest, lifecycleFailed } from './compute-lifecycle.js';
 import { resolveSshKeys } from './ssh-keys.js';
@@ -196,11 +198,14 @@ export async function createServer(req, spec) {
   if (!account.can_create) throw new ProvisionError(403, 'Creating servers is not enabled for your account');
   resolveSshKeys(req.account.id, spec);
   const offering = resolveOffering(customer.id, spec);
+  const billingKeys = offering ? [`size:${offering.sizeId}`, `disk:${offering.storageClassId}`] : [];
+  if (!offering && (billingAccount(customer.id).required || billingAccount(customer.id).subscription_id)) throw new ProvisionError(402, 'Paid reservations require a catalog VM size');
   if (!offering && (!Number.isInteger(spec.cores) || !Number.isInteger(spec.memoryMb))) throw new ProvisionError(400, 'CPU and memory are required');
   const key = req.headers?.['idempotency-key'];
   const hash = offering ? requestHash(spec) : null;
   const previous = offering ? priorRequest(customer.id, account.id, key, hash) : null;
   if (previous) return previous.vmid;
+  await requireBillingAccess(customer.id, billingKeys);
   if (capacityBusy(customer.id)) {
     throw new ProvisionError(409, 'Another server is being created. Wait until it has finished.');
   }
@@ -289,6 +294,7 @@ export async function createServer(req, spec) {
         const current = cloneRule(req, grant.id);
         if (JSON.stringify(current) !== JSON.stringify(grant)) throw new ProvisionError(409, 'The cloning policy changed. Please try again.');
       }
+      assertBillingAccess(customer.id, billingKeys);
       if (offering) {
         checkOfferingRevision(customer.id, offering);
         const { password, username, sshKeys, ...safeSpec } = spec;
@@ -689,6 +695,9 @@ export async function resizeServer(req, row, input) {
     const diskChanged = next.diskGb > cur.diskGb;
     if (!cpuMemChanged && !diskChanged) throw new ProvisionError(400, 'Nothing to change');
 
+    const increases = next.cores > cur.cores || next.memoryMb > cur.memoryMb || next.diskGb > cur.diskGb || !!(offering && offeringCostIncreases(allocation.offering, offering));
+    const billingKeys = offering ? [`size:${offering.sizeId}`, `disk:${offering.storageClassId}`] : [];
+    if (increases) await requireBillingAccess(customer.id, billingKeys);
     const total=await customerUsage(customer);
     if(Object.entries(customer.limits).some(([key,limit])=>key!=='servers'&&limit>0&&total[key]-cur[key]+next[key]>limit)) throw new ProvisionError(409,'This exceeds the customer’s shared resource limits');
 
@@ -713,6 +722,7 @@ export async function resizeServer(req, row, input) {
       const op=await serial(async()=>{
         const placement=await selectPlacement({offering,template:guest,sourceConfig:cfg,pool,existing:{vmid:row.vmid,node:guest.node,storage,diskGb:cur.diskGb}});
         checkOfferingRevision(customer.id,offering);
+        if (increases) assertBillingAccess(customer.id, billingKeys);
         return beginOperation({customerId:customer.id,userId:req.account.id,vmid:row.vmid,kind:'resized',plan:{...placement,reserveDiskGb:next.diskGb-cur.diskGb,cores:Math.max(cur.cores,next.cores),memoryMb:Math.max(cur.memoryMb,next.memoryMb)},onReserve:id=>{
           db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Changing size',spec=? WHERE vmid=?").run(JSON.stringify({...oldSpec,cores:Math.max(cur.cores,next.cores),memoryMb:Math.max(cur.memoryMb,next.memoryMb),diskGb:next.diskGb,operationId:id}),row.vmid);
         }});
@@ -720,6 +730,7 @@ export async function resizeServer(req, row, input) {
       runCatalogResize(op.id);
       return { operationId:op.id,accepted:true,before:cur,after:next,pendingRestart:false };
     }
+    if (increases) assertBillingAccess(customer.id, billingKeys);
     const running = guest.status === 'running';
     const container = guest.type === 'lxc'; // containers take new CPU/memory limits right away
     if (cpuMemChanged) {
@@ -780,47 +791,11 @@ export async function resizeServer(req, row, input) {
 
 // ---- Delete -----------------------------------------------------------------
 
-/** Destroys a customer-created server (must be stopped) and removes its record. */
+/** Deletes an explicitly authorized server after it has stopped. */
 export async function deleteServer(req, row) {
-  assertComputeIdle(row.vmid);
-  if (computeManaged(row.vmid)) await assertNoHa(row.vmid);
-  const guests = await clusterGuests(true);
-  const guest = guests.get(row.vmid);
-
-  if (!guest) {
-    // Unresolved clones are blocked above. Only verified absence releases an allocation.
-    await verifyComputeDeleted(row.vmid);
-    releaseCompute(row.vmid);
-    db.prepare('DELETE FROM vms WHERE vmid = ?').run(row.vmid);
-    audit(req, row.vmid, 'server_deleted');
-    return { removed: true };
-  }
-  if (guest.status !== 'stopped') {
-    throw new ProvisionError(409, 'Shut down the server before deleting it');
-  }
-
-  const path = guestPath(guest); // VM or container
-  if (computeManaged(row.vmid) && (await pve.get(`${path}/config`)).lock) throw new ProvisionError(409, 'Wait until Proxmox unlocks this VM');
-  const upid = await pve.del(path, { purge: 1, 'destroy-unreferenced-disks': 1 });
-  db.prepare("UPDATE vms SET state = 'deleting' WHERE vmid = ?").run(row.vmid);
-  audit(req, row.vmid, 'server_delete_started');
-
-  const actor = { account: { id: req.account.id }, customerId:row.customer_id, ip: req.ip };
-  waitTask(guest.node, upid)
-    .then(async () => {
-      await verifyComputeDeleted(row.vmid);
-      releaseCompute(row.vmid);
-      db.prepare('DELETE FROM vms WHERE vmid = ?').run(row.vmid);
-      audit(actor, row.vmid, 'server_deleted');
-      await forgetServerBackups(row.vmid, guest.node);
-    })
-    .catch((err) => {
-      db.prepare("UPDATE vms SET state = 'failed', error = ? WHERE vmid = ?")
-        .run(`Deleting failed: ${err.message}`.slice(0, 500), row.vmid);
-    })
-    .finally(invalidateGuestCache);
-
-  return { removed: false };
+  const { startVmDeletion } = await import('./vm-deletion.js');
+  const { authorizedRow } = await import('./access.js');
+  return startVmDeletion(req, row, { authorize: () => authorizedRow(req, row.vmid, 'delete') });
 }
 
 // Recovery follows accepted clone tasks. It never resubmits an ambiguous clone.

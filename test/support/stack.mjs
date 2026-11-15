@@ -108,7 +108,7 @@ async function startMailCapture() {
 
 // ---- The stack ------------------------------------------------------------------
 
-export async function startStack({ env = {}, mail = false } = {}) {
+export async function startStack({ env = {}, mail = false, publicUrls = false } = {}) {
   const mock = await startMockPve();
   const smtp = mail ? await startMailCapture() : null;
   const [port, adminPort] = [await freePort(), await freePort()];
@@ -137,7 +137,7 @@ export async function startStack({ env = {}, mail = false } = {}) {
     INITIAL_ADMIN_EMAIL: ADMIN.email,
     INITIAL_ADMIN_PASSWORD: ADMIN.password,
     UPDATE_CHECK: 'false',
-    ...(env.OIDC_ENABLED === 'true' ? {
+    ...(env.OIDC_ENABLED === 'true' || publicUrls ? {
       PANEL_PUBLIC_URL: `http://127.0.0.1:${port}`,
       ADMIN_PUBLIC_URL: `http://127.0.0.1:${adminPort}`,
     } : {}),
