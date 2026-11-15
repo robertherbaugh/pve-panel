@@ -36,10 +36,10 @@ customers before going live.
 
 | Workflow | When | What |
 |---|---|---|
-| **Tests** | pull requests, branches other than `main` | unit + API tests on Node 22 and 24, browser tests |
+| **Tests** | pull requests, branches other than `main` | unit + API tests on Node 26 and 24, browser tests on Node 26 |
 | **Docker image** | `main`, release tags | runs the same tests first; builds and publishes the image only if they pass |
 | **CodeQL** | `main`, pull requests, weekly | code scanning for security issues (Security → Code scanning) |
-| **Documentation** | changes in `website/` | builds this site, fails on broken links |
+| **Documentation** | changes in `website/` | builds this site on Node 26, fails on broken links |
 
 If browser tests fail, the run keeps the Playwright report (screenshots, traces) as a
 downloadable artifact for 14 days.
