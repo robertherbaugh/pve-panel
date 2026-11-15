@@ -16,7 +16,7 @@ test('provider configures sizes, Basic backup destinations, customer add-ons and
     await page.locator('#login-form [name=email]').fill('admin@example.com');
     await page.locator('#login-form [name=password]').fill('correct-horse-battery');
     await page.locator('#login-form button[type=submit]').click();
-    await page.getByRole('tab', { name: 'Compute', exact: true }).click();
+    await page.getByRole('button', { name: 'Compute', exact: true }).click();
     await expect(page.getByText('Customer opt-in', { exact: true })).toBeVisible();
     await page.locator('tr').filter({ has: page.getByText('Small', { exact: true }) }).getByRole('button', { name: 'Edit', exact: true }).click();
     let d = page.getByRole('dialog');
@@ -70,7 +70,7 @@ test('provider configures sizes, Basic backup destinations, customer add-ons and
     await expect(page.locator('[data-preview-result]')).toContainText('No capacity reserved');
     if (process.env.COMPUTE_CATALOG_SCREENSHOT) await page.screenshot({ path: process.env.COMPUTE_CATALOG_SCREENSHOT, fullPage: true });
     await page.reload();
-    await page.getByRole('tab', { name: 'Compute', exact: true }).click();
+    await page.getByRole('button', { name: 'Compute', exact: true }).click();
     await expect(page.getByText('1 VM destinations · 1 backup destinations')).toBeVisible();
     assertNoErrors();
   } finally { await page.close(); await stack.stop(); }

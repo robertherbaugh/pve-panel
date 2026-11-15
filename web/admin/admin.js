@@ -115,10 +115,36 @@ export function generatePassword(length = 16) {
   return Array.from(bytes, (b) => chars[b % chars.length]).join('');
 }
 
-export function createAdmin({ root, api, toast, fail, confirmAction, promptText, esc, getMe, onAbout }) {
+const NAV_GROUPS = [
+  { label: 'Resources', items: [
+    ['servers', 'Servers', 'server', 'Manage servers and customer assignments.'],
+    ['compute', 'Compute', 'cpu', 'Configure VM sizes, storage classes and customer offerings.'],
+    ['templates', 'Templates', 'layers', 'Choose the images customers can use to create servers.'],
+    ['vpn', 'VPN', 'network', 'Manage customer VPN devices and connections.'],
+  ] },
+  { label: 'Access', items: [
+    ['customers', 'Customers', 'users', 'Manage customer organizations, memberships and resource boundaries.'],
+    ['users', 'Users', 'user', 'Manage user accounts, invitations and sign-in security.'],
+    ['permissions', 'Permissions', 'shield', 'Map SSO groups and entitlements to permitted operations.'],
+  ] },
+  { label: 'Administration', items: [
+    ['activity', 'Activity', 'pulse', 'Review recent account and server activity.'],
+    ['settings', 'Settings', 'gear', 'Configure branding, communication and customer services.'],
+    ['setup', 'Setup check', 'check', 'Check the connection, permissions and platform configuration.'],
+    ['account', 'Your account', 'user', 'Manage your two-factor authentication and passkeys.'],
+    ['about', 'About', 'info', 'View the running version and available updates.'],
+  ] },
+];
+const SETTINGS_TABS = [
+  ['branding', 'Branding'], ['appearance', 'Appearance'], ['email', 'Email'],
+  ['backups', 'Backups'], ['expiry', 'Server expiry'], ['winupdates', 'Windows updates'],
+];
+
+export function createAdmin({ root, navigation, api, toast, fail, confirmAction, promptText, esc, getMe, onAbout, onNavigate }) {
   let disposeAccessPolicy = null;
+  let loadRevision = 0;
   const st = {
-    tab: 'servers', users: [], vms: [], audit: [], filter: '', newUser: null,
+    tab: 'servers', settingsTab: 'branding', users: [], vms: [], audit: [], filter: '', newUser: null,
     templates: [], storages: {}, vpn: null,
   };
   const gb = (mb) => `${+(mb / 1024).toFixed(1)} GB`;
@@ -127,6 +153,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
 
   // ---- loading ----------------------------------------------------------
   async function load({ quiet = false } = {}) {
+    const revision = ++loadRevision;
     const body = root.querySelector('#admin-body');
     if (!quiet) body.innerHTML = '<p class="muted">Loading…</p>';
     try {
@@ -145,6 +172,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
       } else if (st.tab === 'setup') {
         st.setup = await api('/api/admin/setup-check');
         if (!st.setup.result) {
+          if (revision !== loadRevision) return;
           renderTab();
           await runSetupCheck();
           return;
@@ -170,8 +198,10 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
       } else {
         st.audit = await api('/api/admin/audit?limit=200');
       }
+      if (revision !== loadRevision) return;
       renderTab();
     } catch (err) {
+      if (revision !== loadRevision) return;
       body.innerHTML = '';
       fail(err);
     }
@@ -179,19 +209,45 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
 
   // ---- shell ------------------------------------------------------------
   function render() {
-    const tabs = [['servers', 'Servers', 'server'], ['customers','Customers','users'], ['users', 'Users', 'user'], ['permissions', 'Permissions', 'shield'], ['compute', 'Compute', 'layers'], ['templates', 'Templates', 'layers'], ['vpn', 'VPN', 'shield'],
-      ['activity', 'Activity', 'pulse'], ['account', 'Your account', 'user'], ['settings', 'Settings', 'gear'], ['setup', 'Setup check', 'check'], ['about', 'About', 'info']];
-    const count = (id) => (id === 'setup' && st.setupProblems ? ` <span class="tab-count" title="Problems found">${st.setupProblems}</span>` : '');
+    if (!navigation.children.length) {
+      navigation.innerHTML = NAV_GROUPS.map((group, i) => `
+        <div class="admin-nav-group" role="group" aria-labelledby="admin-nav-group-${i}">
+          <h2 class="side-label" id="admin-nav-group-${i}">${group.label}</h2>
+          <div class="nav">${group.items.map(([id, label, ic]) => `
+            <button type="button" class="nav-item" data-admin-tab="${id}">${icon(ic, { size: 16 })}<span>${label}</span></button>`).join('')}
+          </div>
+        </div>`).join('');
+    }
+    navigation.querySelectorAll('[data-admin-tab]').forEach((button) => {
+      if (button.dataset.adminTab === st.tab) button.setAttribute('aria-current', 'page');
+      else button.removeAttribute('aria-current');
+    });
+    const [, title, , description] = NAV_GROUPS.flatMap((g) => g.items).find(([id]) => id === st.tab);
     root.innerHTML = `
       <div class="admin-inner">
-        <h1>Administration</h1>
-        <div class="tabs" role="tablist">
-          ${tabs.map(([id, label, ic]) =>
-            `<button class="tab" role="tab" data-admin-tab="${id}" aria-selected="${st.tab === id}">${icon(ic, { size: 16 })}<span>${label}</span>${count(id)}</button>`).join('')}
+        <div class="page-head">
+          <div><h1 id="admin-page-title" tabindex="-1">${title}</h1><p class="lede">${description}</p></div>
         </div>
-        <section id="admin-body"></section>
+        <section id="admin-body" aria-labelledby="admin-page-title"></section>
       </div>`;
   }
+
+  function selectTab(tab) {
+    if (!NAV_GROUPS.some((g) => g.items.some(([id]) => id === tab))) return;
+    if (st.schemePreview) { st.schemePreview = null; applyScheme(st.appearance?.scheme); }
+    disposeAccessPolicy?.();
+    disposeAccessPolicy = null;
+    st.tab = tab;
+    st.newUser = null;
+    render();
+    onNavigate?.();
+    load();
+  }
+
+  navigation.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-admin-tab]');
+    if (button) selectTab(button.dataset.adminTab);
+  });
 
   function renderTab() {
     disposeAccessPolicy?.();
@@ -876,14 +932,47 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
     return '';
   }
 
-  // ---- settings: email ----------------------------------------------------
+  // ---- settings ----------------------------------------------------
+  function selectSettingsTab(id, { focus = false } = {}) {
+    if (!SETTINGS_TABS.some(([tab]) => tab === id)) return;
+    st.settingsTab = id;
+    root.querySelectorAll('[data-settings-tab]').forEach((button) => {
+      const selected = button.dataset.settingsTab === id;
+      button.setAttribute('aria-selected', String(selected));
+      button.tabIndex = selected ? 0 : -1;
+      if (selected && focus) button.focus();
+    });
+    root.querySelectorAll('[data-settings-panel]').forEach((panel) => {
+      panel.hidden = panel.dataset.settingsPanel !== id;
+    });
+  }
+
+  root.addEventListener('keydown', (event) => {
+    const button = event.target.closest('[data-settings-tab]');
+    if (!button || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const current = SETTINGS_TABS.findIndex(([id]) => id === button.dataset.settingsTab);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? SETTINGS_TABS.length - 1
+      : (current + (event.key === 'ArrowRight' ? 1 : -1) + SETTINGS_TABS.length) % SETTINGS_TABS.length;
+    selectSettingsTab(SETTINGS_TABS[next][0], { focus: true });
+  });
+
   function renderSettings() {
     const e = st.email;
     const me = getMe();
     const ap = st.appearance;
+    const otherPanels = [...root.querySelectorAll('[data-settings-panel]')]
+      .filter((panel) => panel.dataset.settingsPanel !== st.settingsTab);
     root.querySelector('#admin-body').innerHTML = `
+      <div class="tabs settings-tabs" role="tablist" aria-label="Settings">
+        ${SETTINGS_TABS.map(([id, label]) => `<button type="button" class="tab" role="tab" id="settings-tab-${id}" data-settings-tab="${id}"
+          aria-controls="settings-panel-${id}" aria-selected="${st.settingsTab === id}" tabindex="${st.settingsTab === id ? 0 : -1}">${label}</button>`).join('')}
+      </div>
       <div class="settings">
+        <div class="settings-panel" role="tabpanel" id="settings-panel-branding" data-settings-panel="branding" aria-labelledby="settings-tab-branding" tabindex="0" ${st.settingsTab === 'branding' ? '' : 'hidden'}>
         <section class="security-card settings-card"><div class="settings-head"><h2 class="twofa-title">Branding</h2></div><div data-branding-editor></div></section>
+        </div>
+        <div class="settings-panel" role="tabpanel" id="settings-panel-appearance" data-settings-panel="appearance" aria-labelledby="settings-tab-appearance" tabindex="0" ${st.settingsTab === 'appearance' ? '' : 'hidden'}>
         <section class="security-card settings-card">
           <div class="settings-head">
             <h2 class="twofa-title"><span class="title-ico">${icon('palette', { size: 18 })}</span>Appearance</h2>
@@ -909,7 +998,8 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
             <span class="muted small" id="scheme-note"></span>
           </div>
         </section>
-
+        </div>
+        <div class="settings-panel" role="tabpanel" id="settings-panel-email" data-settings-panel="email" aria-labelledby="settings-tab-email" tabindex="0" ${st.settingsTab === 'email' ? '' : 'hidden'}>
         <section class="security-card settings-card">
           <div class="settings-head">
             <h2 class="twofa-title"><span class="title-ico">${icon('mail', { size: 18 })}</span>Email <span class="pill ${e.configured ? 'pill-running' : ''}">${e.configured ? 'Configured' : 'Not set up'}</span></h2>
@@ -951,18 +1041,18 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
             </div>
           </form>
         </section>
-
-        <section class="security-card settings-card">
+        <section class="security-card settings-card"${e.configured ? '' : 'hidden'}>
           <div class="settings-head">
-            <h2 class="twofa-title"><span class="title-ico">${icon('windows', { size: 18 })}</span>Windows updates</h2>
-            <p class="muted">Customers can install Windows updates on their Windows servers from the server page
-              (Updates tab): security or all quality updates, optionally with a snapshot first and automatic restarts.
-              Feature upgrades and previews are never installed.</p>
+            <h2 class="twofa-title"><span class="title-ico">${icon('mail', { size: 18 })}</span>Send a test email</h2>
+            <p class="muted">Checks the settings end to end: connection, encryption, sign-in and delivery.</p>
           </div>
-          <label class="check"><input type="checkbox" data-winupdates ${st.winupdates?.enabled ? 'checked' : ''}>
-            <span>Allow customers to install Windows updates</span></label>
+          <form id="email-test" class="vpn-form" novalidate>
+            <label>Send to <input name="to" type="email" required value="${esc(me.email)}"></label>
+            <button class="btn">Send test email</button>
+          </form>
         </section>
-
+        </div>
+        <div class="settings-panel" role="tabpanel" id="settings-panel-backups" data-settings-panel="backups" aria-labelledby="settings-tab-backups" tabindex="0" ${st.settingsTab === 'backups' ? '' : 'hidden'}>
         <section class="security-card settings-card">
           <div class="settings-head">
             <h2 class="twofa-title"><span class="title-ico">${icon('archive', { size: 18 })}</span>Backups</h2>
@@ -996,14 +1086,15 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
             <div class="row"><button class="btn primary">Save</button></div>
           </form>
         </section>
-
+        </div>
+        <div class="settings-panel" role="tabpanel" id="settings-panel-expiry" data-settings-panel="expiry" aria-labelledby="settings-tab-expiry" tabindex="0" ${st.settingsTab === 'expiry' ? '' : 'hidden'}>
         <section class="security-card settings-card">
           <div class="settings-head">
             <h2 class="twofa-title"><span class="title-ico">${icon('calendar', { size: 18 })}</span>Server expiry</h2>
             <p class="muted">For customers or servers you give an expiry date (customer: <em>Limits</em>; server: the
               clock button in <em>Servers</em>). Reminders by email, stopped at expiry, deleted after the grace period —
               only servers the customer created; servers you assigned are only stopped.</p>
-            ${e.configured ? '' : '<p class="small warn-text">Email is not set up: customers get no reminders, and nothing is deleted automatically (servers are only stopped).</p>'}
+            <p class="small warn-text" data-expiry-email-warning ${e.configured ? 'hidden' : ''}>Email is not set up: customers get no reminders, and nothing is deleted automatically (servers are only stopped).</p>
           </div>
           <form id="expiry-settings" class="email-form" novalidate>
             <div class="grid-3">
@@ -1030,21 +1121,28 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
             </div>
           </form>
         </section>
-
-        <section class="security-card settings-card" ${e.configured ? '' : 'hidden'}>
+        </div>
+        <div class="settings-panel" role="tabpanel" id="settings-panel-winupdates" data-settings-panel="winupdates" aria-labelledby="settings-tab-winupdates" tabindex="0" ${st.settingsTab === 'winupdates' ? '' : 'hidden'}>
+        <section class="security-card settings-card">
           <div class="settings-head">
-            <h2 class="twofa-title"><span class="title-ico">${icon('mail', { size: 18 })}</span>Send a test email</h2>
-            <p class="muted">Checks the settings end to end: connection, encryption, sign-in and delivery.</p>
+            <h2 class="twofa-title"><span class="title-ico">${icon('windows', { size: 18 })}</span>Windows updates</h2>
+            <p class="muted">Customers can install Windows updates on their Windows servers from the server page
+              (Updates tab): security or all quality updates, optionally with a snapshot first and automatic restarts.
+              Feature upgrades and previews are never installed.</p>
           </div>
-          <form id="email-test" class="vpn-form" novalidate>
-            <label>Send to <input name="to" type="email" required value="${esc(me.email)}"></label>
-            <button class="btn">Send test email</button>
-          </form>
+          <label class="check"><input type="checkbox" data-winupdates ${st.winupdates?.enabled ? 'checked' : ''}>
+            <span>Allow customers to install Windows updates</span></label>
         </section>
+        </div>
       </div>`;
-    renderBranding(root.querySelector('[data-branding-editor]'), { data: st.branding, api, esc, toast, fail, confirmAction,
-      onSave: (saved) => { st.branding = saved; },
-    });
+    // Retain drafts and in-flight upload handlers in other Settings panels.
+    for (const panel of otherPanels) root.querySelector(`#${panel.id}`).replaceWith(panel);
+    if (!otherPanels.some((panel) => panel.dataset.settingsPanel === 'branding')) {
+      renderBranding(root.querySelector('[data-branding-editor]'), { data: st.branding, api, esc, toast, fail, confirmAction,
+        onSave: (saved) => { st.branding = saved; },
+      });
+    }
+    root.querySelector('[data-expiry-email-warning]').hidden = e.configured;
     warnPlain();
   }
 
@@ -1151,7 +1249,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
   }
   function updateSetupBadge(result) {
     st.setupProblems = setupProblemCount(result);
-    const tab = root.querySelector('[data-admin-tab="setup"]');
+    const tab = navigation.querySelector('[data-admin-tab="setup"]');
     if (!tab) return;
     tab.querySelector('.tab-count')?.remove();
     if (st.setupProblems) tab.insertAdjacentHTML('beforeend', ` <span class="tab-count" title="Problems found">${st.setupProblems}</span>`);
@@ -1329,11 +1427,13 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
     const t = e.target.closest('button');
     if (!t) return;
 
+    if (t.dataset.settingsTab) {
+      selectSettingsTab(t.dataset.settingsTab);
+      return;
+    }
+
     if (t.dataset.adminTab) {
-      st.tab = t.dataset.adminTab;
-      st.newUser = null;
-      render();
-      load();
+      selectTab(t.dataset.adminTab);
       return;
     }
 
@@ -1619,10 +1719,6 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
       load();
       api('/api/admin/setup-check').then((d) => updateSetupBadge(d.result)).catch(() => {});
     },
-    openTab(tab) {
-      st.tab = tab;
-      render();
-      load();
-    },
+    openTab: selectTab,
   };
 }

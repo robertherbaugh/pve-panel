@@ -15,7 +15,7 @@ test('an administrator saves database branding and uploads, replaces and removes
     await admin.locator('#login-form [name=email]').fill('admin@example.com');
     await admin.locator('#login-form [name=password]').fill('correct-horse-battery');
     await admin.locator('#login-form button[type=submit]').click();
-    await admin.getByRole('tab', { name: 'Settings', exact: true }).click();
+    await admin.getByRole('button', { name: 'Settings', exact: true }).click();
     const editor = admin.locator('[data-branding-editor]');
     await editor.getByLabel('Panel name', { exact: true }).fill('RCADEA Cloud');
     await editor.getByRole('button', { name: 'Save name', exact: true }).click();
@@ -31,7 +31,7 @@ test('an administrator saves database branding and uploads, replaces and removes
     const replacement = await logo.getAttribute('src');
     if (process.env.BRANDING_SCREENSHOT) await editor.screenshot({ path: process.env.BRANDING_SCREENSHOT });
     await admin.reload();
-    await admin.getByRole('tab', { name: 'Settings', exact: true }).click();
+    await admin.getByRole('button', { name: 'Settings', exact: true }).click();
     await expect(editor.getByLabel('Panel name', { exact: true })).toHaveValue('RCADEA Cloud');
     await expect(logo).toHaveAttribute('src', replacement);
     await customer.goto(stack.customerUrl);
