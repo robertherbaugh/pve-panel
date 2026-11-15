@@ -1,3 +1,4 @@
+import { renderCustomerBilling } from './billing.js';
 import {renderRetainedBackups} from './retained-backups.js';
 import { configureHa } from './compute-ha.js';
 import { renderComputeServices } from './compute-services.js';
@@ -158,10 +159,12 @@ function renderList() {
     state.account.canCreate
       ? `<button class="nav-item" id="new-server" aria-current="${state.view === 'create'}">${icon('plus')}<span>New server</span></button>` : '',
     state.account.customer?.role==='admin' ? `<button class="nav-item" id="customer-members">${icon('users')}<span>Customer members</span></button>` : '',
+    state.account.customer?.role === 'admin' ? `<button class="nav-item" id="nav-billing" aria-current="${state.view === 'billing'}">${icon('layers')}<span>Billing</span></button>` : '',
     state.account.vpn?.enabled
       ? `<button class="nav-item" id="vpn-access" aria-current="${state.view === 'vpn'}">${icon('shield')}<span>VPN access</span></button>` : '',
   ].join('');
 
+  $('#nav-billing')?.addEventListener('click', openBilling);
   $('#customer-members')?.addEventListener('click',()=>manageCustomerMembers({api,esc,toast,fail,confirmAction}));
   $('#vm-count').textContent = state.vms.length ? String(state.vms.length) : '';
   $('#vm-list').innerHTML = state.vms.length ? state.vms.map((vm) => `
@@ -1988,6 +1991,13 @@ $('#detail').addEventListener('submit', (e) => {
   submitCreate(e.target);
 });
 
+function openBilling() {
+  if (state.account.customer?.role !== 'admin') return;
+  state.view = 'billing'; state.selected = null;
+  history.replaceState(null, '', '#billing');
+  renderList(); renderCustomerBilling($('#detail'));
+}
+
 // ---------- account ----------------------------------------------------------
 function openAccount() {
   state.view = 'account';
@@ -2039,6 +2049,8 @@ async function startApp(me) {
 
   if (location.hash === '#new' && state.account.canCreate) {
     await openCreate();
+  } else if (location.hash === '#billing' && state.account.customer?.role === 'admin') {
+    openBilling();
   } else if (location.hash === '#account') {
     openAccount();
   } else if (location.hash === '#vpn' && state.account.vpn?.enabled) {

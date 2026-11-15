@@ -1,3 +1,5 @@
+import { requireBillingAccess } from './billing-stripe.js';
+import { assertBillingAccess, billingAccount, offeringCostIncreases } from './billing-state.js';
 import { assertNoHa, runHaOperation } from './compute-ha.js';
 import { runCatalogResize, lifecycleStep, lifecycleGuest, lifecycleFailed } from './compute-lifecycle.js';
 import { resolveSshKeys } from './ssh-keys.js';
@@ -196,11 +198,14 @@ export async function createServer(req, spec) {
   if (!account.can_create) throw new ProvisionError(403, 'Creating servers is not enabled for your account');
   resolveSshKeys(req.account.id, spec);
   const offering = resolveOffering(customer.id, spec);
+  const billingKeys = offering ? [`size:${offering.sizeId}`, `disk:${offering.storageClassId}`] : [];
+  if (!offering && (billingAccount(customer.id).required || billingAccount(customer.id).subscription_id)) throw new ProvisionError(402, 'Paid reservations require a catalog VM size');
   if (!offering && (!Number.isInteger(spec.cores) || !Number.isInteger(spec.memoryMb))) throw new ProvisionError(400, 'CPU and memory are required');
   const key = req.headers?.['idempotency-key'];
   const hash = offering ? requestHash(spec) : null;
   const previous = offering ? priorRequest(customer.id, account.id, key, hash) : null;
   if (previous) return previous.vmid;
+  await requireBillingAccess(customer.id, billingKeys);
   if (capacityBusy(customer.id)) {
     throw new ProvisionError(409, 'Another server is being created. Wait until it has finished.');
   }
@@ -289,6 +294,7 @@ export async function createServer(req, spec) {
         const current = cloneRule(req, grant.id);
         if (JSON.stringify(current) !== JSON.stringify(grant)) throw new ProvisionError(409, 'The cloning policy changed. Please try again.');
       }
+      assertBillingAccess(customer.id, billingKeys);
       if (offering) {
         checkOfferingRevision(customer.id, offering);
         const { password, username, sshKeys, ...safeSpec } = spec;
@@ -689,6 +695,9 @@ export async function resizeServer(req, row, input) {
     const diskChanged = next.diskGb > cur.diskGb;
     if (!cpuMemChanged && !diskChanged) throw new ProvisionError(400, 'Nothing to change');
 
+    const increases = next.cores > cur.cores || next.memoryMb > cur.memoryMb || next.diskGb > cur.diskGb || !!(offering && offeringCostIncreases(allocation.offering, offering));
+    const billingKeys = offering ? [`size:${offering.sizeId}`, `disk:${offering.storageClassId}`] : [];
+    if (increases) await requireBillingAccess(customer.id, billingKeys);
     const total=await customerUsage(customer);
     if(Object.entries(customer.limits).some(([key,limit])=>key!=='servers'&&limit>0&&total[key]-cur[key]+next[key]>limit)) throw new ProvisionError(409,'This exceeds the customer’s shared resource limits');
 
@@ -713,6 +722,7 @@ export async function resizeServer(req, row, input) {
       const op=await serial(async()=>{
         const placement=await selectPlacement({offering,template:guest,sourceConfig:cfg,pool,existing:{vmid:row.vmid,node:guest.node,storage,diskGb:cur.diskGb}});
         checkOfferingRevision(customer.id,offering);
+        if (increases) assertBillingAccess(customer.id, billingKeys);
         return beginOperation({customerId:customer.id,userId:req.account.id,vmid:row.vmid,kind:'resized',plan:{...placement,reserveDiskGb:next.diskGb-cur.diskGb,cores:Math.max(cur.cores,next.cores),memoryMb:Math.max(cur.memoryMb,next.memoryMb)},onReserve:id=>{
           db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Changing size',spec=? WHERE vmid=?").run(JSON.stringify({...oldSpec,cores:Math.max(cur.cores,next.cores),memoryMb:Math.max(cur.memoryMb,next.memoryMb),diskGb:next.diskGb,operationId:id}),row.vmid);
         }});
@@ -720,6 +730,7 @@ export async function resizeServer(req, row, input) {
       runCatalogResize(op.id);
       return { operationId:op.id,accepted:true,before:cur,after:next,pendingRestart:false };
     }
+    if (increases) assertBillingAccess(customer.id, billingKeys);
     const running = guest.status === 'running';
     const container = guest.type === 'lxc'; // containers take new CPU/memory limits right away
     if (cpuMemChanged) {

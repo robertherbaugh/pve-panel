@@ -1,3 +1,4 @@
+import { renderBilling } from './billing.js';
 import { ACTION_LABELS } from '/shared/audit-actions.js';
 import { sectionTabs, markedSections } from './sections.js';
 import { icon } from '/shared/icons.js';
@@ -35,6 +36,7 @@ const NAV_GROUPS = [
     ['permissions', 'Permissions', 'shield', 'Map SSO groups and entitlements to permitted operations.'],
   ] },
   { label: 'Administration', items: [
+    ['billing', 'Billing', 'layers', 'Manage reservation prices, subscriptions and customer invoices.'],
     ['activity', 'Activity', 'pulse', 'Review recent account and server activity.'],
     ['settings', 'Settings', 'gear', 'Configure branding, communication and customer services.'],
     ['setup', 'Setup check', 'check', 'Check the connection, permissions and platform configuration.'],
@@ -90,6 +92,8 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
         [st.computeCatalog, st.customerData] = await Promise.all([
           api('/api/admin/compute-catalog'), api('/api/admin/customers'),
         ]);
+      } else if (st.tab === 'billing') {
+        st.billing = await api('/api/admin/billing');
       } else if (st.tab === 'about') {
         st.about = await api(`/api/admin/about${st.refreshAbout ? '?refresh=1' : ''}`);
         st.refreshAbout = false;
@@ -167,6 +171,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
       data: st.computeCatalog, customers: st.customerData.customers, api, esc, toast, fail,
       onSave: (saved) => { st.computeCatalog = saved; },
     });
+    if (st.tab === 'billing') disposeAccessPolicy = renderBilling(root.querySelector('#admin-body'), { data: st.billing, reload: load });
     if (st.tab === 'vpn') renderVpn();
     if (st.tab === 'activity') renderActivity();
     if (st.tab === 'account') {

@@ -1,3 +1,5 @@
+import { requireBillingAccess } from './billing-stripe.js';
+import { assertBillingAccess } from './billing-state.js';
 import { haPolicy } from './compute-ha-policy.js';
 import { db, audit } from './db.js';
 import { computeProfile, computeCatalog, saveComputeProfile } from './compute-catalog.js';
@@ -19,6 +21,12 @@ export default async function computeServiceRoutes(app) {
     if(!p.catalogEnabled) fail('Catalog services are not enabled for this customer',403);
     if(capacityBusy(customer.id)) fail('Wait until the current compute operation finishes');
     if(p.revision!==req.body.revision) fail('Customer services changed. Reload before saving.');
+    if (req.body.backupServiceEnabled && !p.backupServiceEnabled && !p.backupServiceIncluded) {
+      await requireBillingAccess(customer.id, ['addon:backups']);
+      if (computeProfile(customer.id).revision !== p.revision || requireCustomer(req).revision !== customer.revision) fail('Customer services changed. Reload before saving.');
+      if (capacityBusy(customer.id)) fail('Wait until the current compute operation finishes');
+      assertBillingAccess(customer.id, ['addon:backups']);
+    }
     // Only this selection can change. Provider quotas, sizes and HA eligibility stay protected.
     const {catalogEnabled,network,revision,tier,sizeIds,storageClassIds,haAllowed,storageLimitsGb,backupLimitGb}=p;
     saveComputeProfile(customer.id,{catalogEnabled,network,revision,catalogRevision:computeCatalog().revision,tier,sizeIds,storageClassIds,haAllowed,storageLimitsGb,backupLimitGb,backupServiceEnabled:req.body.backupServiceEnabled});

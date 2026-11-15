@@ -18,6 +18,8 @@ import { currentScheme } from './appearance.js';
 import { initializeBranding, publicBranding, brandingFiles } from './branding.js';
 import brandingRoutes from './routes/branding.js';
 import computeCatalogRoutes from './routes/compute-catalog.js';
+import { adminBillingRoutes, customerBillingRoutes, billingWebhookRoutes } from './routes/billing.js';
+import { startBillingReconciliation } from './billing-stripe.js';
 import { startUpdateTracker } from './winupdate.js';
 import { startSetupCheckScheduler } from './setupcheck.js';
 import { startBackupScheduler } from './backups.js';
@@ -114,6 +116,8 @@ async function buildServer(name, setup) {
 const customer = await buildServer('customer', async (app) => {
   await app.register(websocket, { options: { maxPayload: 16 * 1024 * 1024 } });
   await app.register(authPlugin, { scope: 'customer' });
+  await app.register(billingWebhookRoutes);
+  await app.register(customerBillingRoutes);
   await app.register(computeServiceRoutes);
   await app.register(retainedBackupRoutes);
   await app.register(customerContextRoutes);
@@ -140,6 +144,7 @@ const admin = await buildServer('admin', async (app) => {
   await app.register(adminRoutes);
   await app.register(brandingRoutes);
   await app.register(computeCatalogRoutes);
+  await app.register(adminBillingRoutes);
 
   await app.register(fastifyStatic, { root: web('admin') });
   await app.register(fastifyStatic, { root: web('shared'), prefix: '/shared/', decorateReply: false });
@@ -153,6 +158,7 @@ startUpdateTracker(admin.log);
 startSetupCheckScheduler(admin.log);
 startBackupScheduler(admin.log);
 startComputeRecovery(admin.log);
+startBillingReconciliation(admin.log);
 
 await customer.listen({ port: config.port, host: config.host });
 await admin.listen({ port: config.adminPort, host: config.adminHost });
