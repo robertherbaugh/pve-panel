@@ -1,3 +1,4 @@
+import { loading } from '/shared/ui.js';
 import { markedSections } from './sections.js';
 import { renderAdoption } from './compute-adoption.js';
 import { renderRemoteAccess } from './compute-remote.js';
@@ -130,7 +131,7 @@ export function renderComputeCatalog(host, { data, customers, api, esc, toast, f
 
   async function editClass(c) {
     const d = open(`Edit ${c.name}`), pickers = [];
-    d.innerHTML = `<form class="settings access-editor">${header(`Edit ${c.name}`)}<p>${esc(c.description)}</p><label class="check"><input name="enabled" type="checkbox" ${c.enabled ? 'checked' : ''}>Storage class enabled</label><div data-vm></div>${c.id === 'basic' ? '<div data-backup></div>' : ''}<p class="hint">Mapping a destination declares its physical storage class. Verify the underlying media first. A mapping does not grant Proxmox permissions or prove HA support.</p><p class="muted small" data-inventory>Loading Proxmox inventory…</p>${footer}</form>`;
+    d.innerHTML = `<form class="settings access-editor">${header(`Edit ${c.name}`)}<p>${esc(c.description)}</p><label class="check"><input name="enabled" type="checkbox" ${c.enabled ? 'checked' : ''}>Storage class enabled</label><div data-vm></div>${c.id === 'basic' ? '<div data-backup></div>' : ''}<p class="hint">Mapping a destination declares its physical storage class. Verify the underlying media first. A mapping does not grant Proxmox permissions or prove HA support.</p><p class="muted small" data-inventory role="status">${loading('Loading Proxmox inventory…')}</p>${footer}</form>`;
     for (const purpose of c.id === 'basic' ? ['vm', 'backup'] : ['vm']) {
       const picker = resourcePicker(d.querySelector(`[data-${purpose}]`), { label: purpose === 'vm' ? 'VM destinations' : 'Backup destinations (Basic only)', selected: c.bindings.filter((b) => b.purpose === purpose).map((b) => `${b.node}/${b.storage}`), choices: [], esc });
       pickers.push({ purpose, picker });

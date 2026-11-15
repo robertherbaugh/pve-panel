@@ -1,3 +1,5 @@
+import { loading } from '/shared/ui.js';
+
 // Shared controls for every admin inventory, including tables loaded in dialogs.
 // Local rows are moved/hidden, never recreated, so editing and action identity survive.
 const preferences = new Map();
@@ -107,7 +109,8 @@ function enhance(table, api) {
       c.th.setAttribute('aria-sort', state.sort === c.key ? (state.order === 'asc' ? 'ascending' : 'descending') : 'none');
       c.sortArrow.textContent = state.sort === c.key ? (state.order === 'asc' ? ' ↑' : ' ↓') : ' ↕';
     });
-    status.textContent = pending ? 'Loading…' : `${total ? (state.page - 1) * state.pageSize + 1 : 0}–${Math.min(state.page * state.pageSize, total)} of ${total} results`;
+    if (pending) status.innerHTML = loading();
+    else status.textContent = `${total ? (state.page - 1) * state.pageSize + 1 : 0}–${Math.min(state.page * state.pageSize, total)} of ${total} results`;
     table.setAttribute('aria-busy', String(pending));
   }
   function sync() {

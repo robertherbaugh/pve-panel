@@ -1,6 +1,7 @@
 import { ACTION_LABELS } from '/shared/audit-actions.js';
 import { sectionTabs, markedSections } from './sections.js';
 import { icon } from '/shared/icons.js';
+import { loading } from '/shared/ui.js';
 import { renderSecurity } from '/shared/twofa.js';
 import { renderPasskeys } from '/shared/passkeys.js';
 import { applyScheme } from '/shared/icons.js';
@@ -61,7 +62,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   async function load({ quiet = false } = {}) {
     const revision = ++loadRevision;
     const body = root.querySelector('#admin-body');
-    if (!quiet) body.innerHTML = '<p class="muted">Loading…</p>';
+    if (!quiet) body.innerHTML = `<p class="muted" role="status">${loading()}</p>`;
     try {
       if (st.tab === 'servers') {
         [st.vms, st.users, st.customerData] = await Promise.all([api('/api/admin/vms'), api('/api/admin/users'),api('/api/admin/customers')]);
@@ -376,17 +377,37 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
         </div>
       </div>` : '';
 
+    const action = (u, attr, label, glyph, danger = false) => `<button type="button" class="icon-btn act${danger ? ' danger' : ''}" ${attr} title="${label}" aria-label="${label} for ${esc(u.email)}">${icon(glyph)}</button>`;
     root.querySelector('#admin-body').innerHTML = `
-      <section data-section="Add user"><h2 class="h2">Add a user</h2><p class="muted">Manage identities here. Add users to organizations from the Customers tab.</p>
+      <div class="section-head"><div><h2 class="h2">Directory</h2><p class="muted">Manage identities here. Add users to organizations from the Customers page.</p></div><button type="button" class="btn primary" data-add-user>${icon('plus')}Add user</button></div>
+      ${note}
+      <div class="table-wrap"><table class="table" data-admin-table="Users"><thead><tr><th>User</th><th>Platform role</th><th>Customers</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+        ${st.users.map(u=>`<tr data-user="${u.id}"><td>${esc(u.email)}${u.id===me.id?' (you)':''}${u.ssoLinked?' <span class="tag">SSO</span>':''}</td><td>${u.isAdmin?'Administrator':'User'}</td><td>${[...new Set(u.customers.map(c=>c.name))].map(n=>`<span class="badge">${esc(n)}</span>`).join(' ')||'<span class="muted">No memberships</span>'}</td><td>${u.disabled?'Disabled':'Active'}</td><td class="actions"><div class="user-actions" role="group" aria-label="Actions for ${esc(u.email)}">${action(u, 'data-twofa', 'Sign-in settings', 'shield')}${action(u, 'data-reset', 'Reset password', 'key')}${u.canCreate ? action(u, 'data-limits', 'Legacy user limits', 'layers') : ''}${u.id!==me.id ? `${action(u, 'data-toggle-admin', u.isAdmin ? 'Remove admin' : 'Make admin', u.isAdmin ? 'shield-minus' : 'shield-plus')}${action(u, 'data-disable-user', u.disabled ? 'Enable user' : 'Disable user', u.disabled ? 'check' : 'ban', !u.disabled)}` : ''}</div></td></tr>`).join('')}
+      </tbody></table></div>`;
+    const host = root.querySelector('#admin-body');
+    sectionTabs(host, 'Users', [{ id: 'directory', label: 'Directory', nodes: [...host.children] }]);
+  }
+
+  function openAddUser() {
+    const existing = root.querySelector('#add-user');
+    if (existing) return;
+    const dialog = document.createElement('dialog');
+    dialog.id = 'add-user';
+    dialog.className = 'user-create-modal';
+    dialog.setAttribute('aria-labelledby', 'add-user-title');
+    dialog.innerHTML = `
       <form id="user-form" class="user-form" autocomplete="off">
+        <div class="section-head"><h2 id="add-user-title" class="h2">Add user</h2><button type="button" class="btn" data-close-add-user>Close</button></div>
+        <p class="muted">Create an identity, then add it to an organization from the Customers page.</p>
+        <div class="grid-2">
         <label>Email <input name="email" type="email" required maxlength="254"></label>
         <label id="pw-field">Password
           <span class="with-button">
-            <input name="password" type="password" required minlength="12" maxlength="200" autocomplete="new-password">
+            <input name="password" type="password" aria-label="Password" required minlength="12" maxlength="200" autocomplete="new-password">
             <button type="button" class="btn" data-generate>Generate</button>
           </span>
         </label>
-        <button class="btn primary">Add user</button>
+        </div>
         <label class="check">
           <input type="checkbox" name="isAdmin">
           <span>Administrator <span class="muted">Can open this area and manage all customers and servers.</span></span>
@@ -403,14 +424,15 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
           <input type="checkbox" name="requireTotp">
           <span>Require two-factor authentication <span class="muted">The user sets up an authenticator app at the first sign-in, before they can do anything else.</span></span>
         </label>
-      </form></section>
-      ${note}
-
-      <section data-section="Directory"><div class="table-wrap"><table class="table" data-admin-table="Users"><thead><tr><th>User</th><th>Platform role</th><th>Customers</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-        ${st.users.map(u=>`<tr data-user="${u.id}"><td>${esc(u.email)}${u.id===me.id?' (you)':''}${u.ssoLinked?' <span class="tag">SSO</span>':''}</td><td>${u.isAdmin?'Administrator':'User'}</td><td>${[...new Set(u.customers.map(c=>c.name))].map(n=>`<span class="badge">${esc(n)}</span>`).join(' ')||'<span class="muted">No memberships</span>'}</td><td>${u.disabled?'Disabled':'Active'}</td><td class="actions"><button class="btn" data-twofa>Sign-in</button><button class="btn" data-reset>Reset password</button>${u.canCreate?'<button class="btn" data-limits>Personal plan</button>':''}${u.id!==me.id?`<button class="btn" data-toggle-admin>${u.isAdmin?'Remove admin':'Make admin'}</button><button class="btn ${u.disabled?'':'danger'}" data-disable-user>${u.disabled?'Enable':'Disable'}</button>`:''}</td></tr>`).join('')}
-      </tbody></table></div></section>`;
-    const host = root.querySelector('#admin-body');
-    sectionTabs(host, 'Users', ['Directory', 'Add user'].map(id => ({ id, label: id, nodes: [host.querySelector(`[data-section="${id}"]`)] })), { before: host.firstElementChild });
+        <p class="form-error" data-create-user-error role="alert"></p>
+        <div class="row end"><button type="button" class="btn" data-close-add-user>Cancel</button><button type="submit" class="btn primary">Add user</button></div>
+      </form>`;
+    root.append(dialog);
+    dialog.querySelectorAll('[data-close-add-user]').forEach(button => { button.onclick = () => dialog.close(); });
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    dialog.addEventListener('cancel', event => { if (dialog.querySelector('[type=submit]').disabled) event.preventDefault(); });
+    dialog.showModal();
+    dialog.querySelector('[name=email]').focus();
   }
 
   function watchDeletions() {
@@ -477,22 +499,35 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   }
 
   async function createUser(form) {
+    const dialog = form.closest('dialog');
+    const button = form.querySelector('[type=submit]');
+    if (button.disabled) return;
     const email = form.email.value.trim();
     const invite = form.invite.checked;
     const password = invite ? undefined : form.password.value;
     const isAdmin = form.isAdmin.checked;
     const requireTotp = form.requireTotp.checked;
     const generated = !invite && form.dataset.generated === password;
-    const button = form.querySelector('.btn.primary');
     button.disabled = true;
+    button.innerHTML = loading('Adding user…');
+    form.querySelector('[data-create-user-error]').textContent = '';
+    form.querySelectorAll('[data-close-add-user]').forEach(b => { b.disabled = true; });
     try {
       const r = await api('/api/admin/users', { method: 'POST', body: { email, password, isAdmin, requireTotp, invite, createPersonalCustomer:false } });
       st.newUser = { email, password: generated ? password : null, invited: r.invited, inviteError: r.inviteError };
-      st.users = await api('/api/admin/users');
-      renderUsers();
+      dialog.close();
+      try { st.users = await api('/api/admin/users'); } catch (err) { fail(err); }
+      if (st.tab === 'users') {
+        renderUsers();
+        root.querySelector('[data-add-user]').focus();
+      }
     } catch (err) {
+      form.querySelector('[data-create-user-error]').textContent = err.message;
       fail(err);
+    } finally {
       button.disabled = false;
+      button.textContent = 'Add user';
+      form.querySelectorAll('[data-close-add-user]').forEach(b => { b.disabled = false; });
     }
   }
 
@@ -500,7 +535,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   function editLimits(user) {
     const dialog = document.getElementById('limits');
     const form = document.getElementById('limits-form');
-    document.getElementById('limits-title').textContent = `Limits and expiry for ${user.email}`;
+    document.getElementById('limits-title').textContent = `Legacy user limits for ${user.email}`;
     form.expiryMode.value = user.expiryMode ?? '';
     form.expiryDays.value = user.expiryDays ?? 14;
     form.expiryDate.value = user.expiryDate ?? '';
@@ -1342,6 +1377,8 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   root.addEventListener('click', async (e) => {
     const t = e.target.closest('button');
     if (!t) return;
+
+    if (t.hasAttribute('data-add-user')) { openAddUser(); return; }
 
     if (t.dataset.settingsTab) {
       selectSettingsTab(t.dataset.settingsTab);

@@ -1,3 +1,4 @@
+import { loading } from '/shared/ui.js';
 import { sectionTabs } from './sections.js';
 import { resourcePicker } from './resource-picker.js';
 import { icon } from '../shared/icons.js';
@@ -71,7 +72,7 @@ export function renderCustomers(host, { data, users, api, esc, toast, fail, conf
     d.innerHTML = `<form class="settings access-editor"><div class="section-head"><h2>${title}</h2><button type="button" class="btn" data-close>Close</button></div>
       <div class="grid-2">${field('name', 'Customer name', c?.name, 'required maxlength="100"')}${field('slug', 'Customer ID', c?.slug, 'required pattern="[a-z0-9][a-z0-9-]{0,63}" maxlength="64"')}</div>
       <label class="check"><input name="enabled" type="checkbox" ${!c || c.enabled ? 'checked' : ''}>Customer enabled</label>
-      <fieldset><legend>Resource boundary</legend><div data-pools></div><p class="hint">Only these Proxmox pools belong to this customer. Empty means access is limited to VMs explicitly assigned to the customer. A permission set can narrow this boundary.</p><p class="hint">Pool choices come from Proxmox using the panel’s API token. Missing pools need Pool.Audit permission on that token.</p><p class="muted small" data-inventory>Loading Proxmox pools…</p></fieldset>
+      <fieldset><legend>Resource boundary</legend><div data-pools></div><p class="hint">Only these Proxmox pools belong to this customer. Empty means access is limited to VMs explicitly assigned to the customer. A permission set can narrow this boundary.</p><p class="hint">Pool choices come from Proxmox using the panel’s API token. Missing pools need Pool.Audit permission on that token.</p><p class="muted small" data-inventory role="status">${loading('Loading Proxmox pools…')}</p></fieldset>
       <fieldset><legend>SSO membership</legend><div class="grid-2">${field('groups', 'OIDC groups', s.groups.join(', '))}${field('entitlements', 'Application entitlements', s.entitlements.join(', '))}</div>
         <p class="hint">Exact values, separated by commas. A matching trusted claim adds the user as a member with no VM operations until a permission set grants them.</p>
         <label>Membership matching<select name="match"><option value="any" ${s.match === 'any' ? 'selected' : ''}>Group OR entitlement</option><option value="all" ${s.match === 'all' ? 'selected' : ''}>Group AND entitlement</option></select></label>
@@ -178,8 +179,8 @@ export function renderCustomers(host, { data, users, api, esc, toast, fail, conf
     d.innerHTML = `<form class="settings access-editor"><div class="section-head"><h2>Delete customer ${esc(c.name)}</h2><button type="button" class="btn" data-close>Close</button></div>
       <p>This removes the customer from the panel. Its memberships, permission sets and pool mappings will be removed. You cannot undo this action.</p>
       <p>User accounts, Proxmox guests and pools, and operation history are preserved.</p>
-      <div data-plan><p class="muted">Checking customer resources…</p></div>
-      <div class="customer-delete-confirmation"><p class="customer-delete-instruction" data-confirmation-prompt>Loading confirmation…</p><input name="confirmation" aria-label="Customer name confirmation" placeholder="Enter confirmation" autocomplete="off" required disabled></div>
+      <div data-plan><p class="muted" role="status">${loading('Checking customer resources…')}</p></div>
+      <div class="customer-delete-confirmation"><p class="customer-delete-instruction" data-confirmation-prompt>${loading('Loading confirmation…')}</p><input name="confirmation" aria-label="Customer name confirmation" placeholder="Enter confirmation" autocomplete="off" required disabled></div>
       <p class="form-error" data-error role="alert"></p><div class="row end"><button type="button" class="btn" data-cancel>Cancel</button><button class="btn danger" data-confirm-delete disabled>Delete customer</button></div></form>`;
     const f = d.querySelector('form'),
       input = f.elements.confirmation,

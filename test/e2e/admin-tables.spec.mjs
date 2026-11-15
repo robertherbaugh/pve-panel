@@ -74,17 +74,10 @@ test('every admin page has section tabs; keyboard navigation and drafts work out
     await expect(page.getByRole('tablist').first()).toBeVisible({ timeout: 30000 });
     await expect(page.getByRole('tablist').first().locator('[aria-selected=true]')).toHaveCount(1);
   }
-  await page.locator('[data-admin-tab=users]').click();
-  const tabs = page.getByRole('tablist', { name: 'Users', exact: true });
-  await tabs.getByRole('tab', { name: 'Directory', exact: true }).focus();
-  await page.keyboard.press('End');
-  await expect(tabs.getByRole('tab', { name: 'Add user', exact: true })).toBeFocused();
-  await page.locator('#user-form').getByLabel('Email', { exact: true }).fill('draft@example.com');
-  await tabs.getByRole('tab', { name: 'Directory', exact: true }).click();
-  await tabs.getByRole('tab', { name: 'Add user', exact: true }).click();
-  await expect(page.locator('#user-form').getByLabel('Email', { exact: true })).toHaveValue('draft@example.com');
-
   await page.locator('[data-admin-tab=compute]').click();
+  await page.getByRole('tab', { name: 'VM sizes', exact: true }).focus();
+  await page.keyboard.press('End');
+  await expect(page.getByRole('tab', { name: 'Operations', exact: true })).toBeFocused();
   await page.getByRole('tab', { name: 'Capacity', exact: true }).click();
   await page.getByLabel('Host memory reserve (MiB)', { exact: true }).fill('12345');
   await page.getByRole('tab', { name: 'VM sizes', exact: true }).click();

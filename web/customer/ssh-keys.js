@@ -1,6 +1,6 @@
-import { api, esc, confirmAction } from '/shared/ui.js';
+import { api, esc, loading, confirmAction } from '/shared/ui.js';
 export async function renderSshKeys(host) {
-  host.innerHTML='<section class="security-card"><h2>SSH keys</h2><p>Loading saved keys…</p></section>';
+  host.innerHTML=`<section class="security-card"><h2>SSH keys</h2><p role="status">${loading('Loading saved keys…')}</p></section>`;
   try {
     const {keys}=await api('/api/ssh-keys');
     if (!host.isConnected) return;

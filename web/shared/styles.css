@@ -191,11 +191,14 @@ label { display: grid; gap: 6px; font-weight: 600; font-size: 14px; }
 .meter > i { display: block; height: 100%; border-radius: 3px; background: var(--signal); }
 
 .spinner {
+  display: inline-block; box-sizing: border-box; vertical-align: middle;
   width: 14px; height: 14px; flex: none; border-radius: 50%;
   border: 2px solid color-mix(in srgb, var(--warn) 30%, transparent); border-top-color: var(--warn);
   animation: spin .9s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.loading-state { display: inline-flex; align-items: center; gap: 9px; }
+.loading-state .spinner { border-color: color-mix(in srgb, var(--signal) 22%, transparent); border-top-color: var(--signal); }
 
 /* =========================================================================
    Sign-in: the network picture on the left, the form on the right
@@ -382,7 +385,7 @@ img.brand-logo { width: auto; max-width: 180px; object-fit: contain; }
 @media (prefers-reduced-motion: reduce) {
   .netmap.animate .edge, .netmap.animate .hub, .netmap.animate .map-node,
   .login-graphic .lg-node, .login-graphic .lg-vpn { animation: none; }
-  .spinner { animation-duration: 3s; }
+  .spinner { animation: none; }
 }
 
 /* =========================================================================
@@ -622,7 +625,15 @@ img.brand-logo { width: auto; max-width: 180px; object-fit: contain; }
 .admin h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
 .admin .tabs { margin-top: 18px; }
 .filter { width: min(320px, 100%); }
-.user-form { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(260px, 1fr) auto; gap: 12px; align-items: end; max-width: 900px; }
+.user-form { display: grid; gap: 18px; }
+.user-create-modal { width: 680px; max-width: min(680px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; box-sizing: border-box; }
+.user-create-modal .section-head { margin: 0; }
+.user-create-modal p { margin: 0; }
+.user-form .grid-2 { align-items: start; }
+.user-form .with-button input { min-width: 0; width: 100%; }
+.user-actions { display: inline-flex; align-items: center; gap: 6px; }
+.user-actions .icon-btn.act { width: 40px; height: 40px; border-color: var(--line); }
+.user-actions .icon-btn.danger { color: var(--danger); }
 .limits-form { display: grid; gap: 16px; }
 .limits-form .h2 { margin: 0; }
 
