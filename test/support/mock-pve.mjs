@@ -367,6 +367,7 @@ export async function startMockPve({ port = 0 } = {}) {
     if (rest === '/config' && req.method === 'PUT') { const b = await body(req); if (b.net0) b.net0 = withMac(b.net0); log('CONFIG', vmid, JSON.stringify(b));
       const hot = vm.status === 'running';
       for (const k of ['cores', 'memory', 'sockets']) if (b[k] !== undefined && hot && String(vm.cfg[k] ?? '') !== String(b[k])) (vm.pending ??= {})[k] = b[k];
+      if (b.delete) { for (const key of b.delete.split(',')) delete vm.cfg[key];delete b.delete; }
       Object.assign(vm.cfg, b);
       if (!hot) { if (b.cores) vm.maxcpu = Number(b.cores); if (b.memory) vm.maxmem = Number(b.memory)*2**20; }
       return send(res, null); }

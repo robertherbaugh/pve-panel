@@ -1,3 +1,4 @@
+import sshKeyRoutes from './ssh-keys.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
@@ -113,6 +114,7 @@ const customer = await buildServer('customer', async (app) => {
   await app.register(authPlugin, { scope: 'customer' });
   await app.register(customerContextRoutes);
   await app.register(vmRoutes);
+  await app.register(sshKeyRoutes);
   await app.register(consoleRoutes);
   await app.register(vpnRoutes);
 

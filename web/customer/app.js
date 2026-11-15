@@ -1,3 +1,4 @@
+import { renderSshKeys } from './ssh-keys.js';
 import {
   $, esc, api, toast, fail, confirmAction, promptText, generatePassword,
   bytes, pct, duration, SignedOut, setUnauthorizedHandler,
@@ -811,7 +812,8 @@ async function openCreate() {
   renderList();
   $('#detail').innerHTML = '<div class="detail-inner"><p class="muted">Loading…</p></div>';
   try {
-    const [account, templates] = await Promise.all([api('/api/account'), api('/api/templates')]);
+    const [account, templates, saved] = await Promise.all([api('/api/account'), api('/api/templates'), api('/api/ssh-keys')]);
+    state.sshKeys = saved.keys;
     state.account = account;
     state.allTemplates = templates;
     state.createDestination = account.personalCreation ? '' : account.cloneDestinations?.[0]?.id ?? '';
@@ -925,7 +927,10 @@ function renderCreate() {
               <span class="mono" id="windows-user"></span>
             </div>
           </div>
-          <label>Password
+          <label data-os="cloudinit container">Sign-in method
+            <select name="loginMethod"><option value="ssh" ${state.sshKeys?.length ? 'selected' : ''}>SSH keys</option><option value="password" ${state.sshKeys?.length ? '' : 'selected'}>Username and password</option><option value="both">SSH keys and password</option></select>
+          </label>
+          <label data-password-field>Password
             <span class="with-button">
               <input name="password" type="password" minlength="12" maxlength="200" autocomplete="new-password">
               <button type="button" class="btn" data-generate>Generate</button>
@@ -933,10 +938,12 @@ function renderCreate() {
             <span class="hint" data-os="cloudinit container">At least 12 characters. Leave empty if you only want to sign in with an SSH key.</span>
             <span class="hint" data-os="windows">At least 12 characters with three of: lowercase, uppercase, numbers, symbols.</span>
           </label>
-          <label data-os="cloudinit container">SSH public keys
+          <div data-os="cloudinit container" data-key-fields>
+          ${state.sshKeys?.length ? `<fieldset><legend>Saved SSH keys</legend>${state.sshKeys.map(k=>`<label class="check"><input type="checkbox" name="sshKeyIds" value="${k.id}" checked><span>${esc(k.name)} <span class="mono small muted">${esc(k.fingerprint)}</span></span></label>`).join('')}</fieldset>` : '<p class="hint">You can save reusable public keys under Account.</p>'}
+          <label>SSH public keys
             <textarea name="sshKeys" rows="3" spellcheck="false" placeholder="ssh-ed25519 AAAA… you@laptop"></textarea>
-            <span class="hint">Optional. One key per line.</span>
-          </label>
+            <span class="hint">One public key per line. Your private keys stay on your device.</span>
+          </label></div>
         </fieldset>
 
         <p id="create-error" class="form-error" role="alert"></p>
@@ -963,6 +970,24 @@ function renderCreate() {
 const findTemplate = (value) => state.templates.find((t) => String(t.id) === String(value));
 
 /** Shows the fields that apply to the chosen image: cloud-init, Windows or container. */
+function applyAuthentication(form, tpl) {
+  if (!form.loginMethod) return;
+  const windows = tpl.setup === 'windows', method = form.loginMethod.value;
+  const password = windows || method !== 'ssh', keys = !windows && method !== 'password';
+  form.querySelector('[data-password-field]').hidden = !password;
+  form.password.disabled = !password;form.password.required = password;
+  const keyFields = form.querySelector('[data-key-fields]');
+  keyFields.hidden = !keys;
+  keyFields.querySelectorAll('input,textarea').forEach(f => {f.disabled = !keys;});
+  form.sshKeys.required = keys && !form.querySelector('[name=sshKeyIds]:checked');
+  if (!form.dataset.authBound) {
+    form.dataset.authBound='1';
+    form.addEventListener('change', e=>{
+      if (['loginMethod','sshKeyIds'].includes(e.target.name)) applyAuthentication(form, findTemplate(form.templateId.value));
+    });
+  }
+}
+
 function applyTemplateMode(form, tpl) {
   const mode = tpl.setup;                 // cloudinit | windows | container
   const windows = mode === 'windows';
@@ -982,6 +1007,7 @@ function applyTemplateMode(form, tpl) {
       : 'Lowercase letters, numbers and hyphens.';
   }
   form.querySelector('#windows-user').textContent = mode === 'cloudinit' ? '' : tpl.defaultUser;
+  applyAuthentication(form, tpl);
 }
 
 function onTemplateChange(form) {
@@ -1507,7 +1533,8 @@ async function openReinstall() {
   state.view = 'reinstall';
   $('#detail').innerHTML = '<div class="detail-inner"><p class="muted">Loading…</p></div>';
   try {
-    state.templates = await api('/api/templates');
+    const [templates, saved] = await Promise.all([api('/api/templates'), api('/api/ssh-keys')]);
+    state.templates = templates; state.sshKeys = saved.keys;
     if (state.view === 'reinstall') renderReinstall(vm);
   } catch (err) { fail(err); }
 }
@@ -1563,7 +1590,10 @@ function renderReinstall(vm) {
               <span class="mono" id="windows-user"></span>
             </div>
           </div>
-          <label>Password
+          <label data-os="cloudinit container">Sign-in method
+            <select name="loginMethod"><option value="ssh" ${state.sshKeys?.length ? 'selected' : ''}>SSH keys</option><option value="password" ${state.sshKeys?.length ? '' : 'selected'}>Username and password</option><option value="both">SSH keys and password</option></select>
+          </label>
+          <label data-password-field>Password
             <span class="with-button">
               <input name="password" type="password" minlength="12" maxlength="200" autocomplete="new-password">
               <button type="button" class="btn" data-generate>Generate</button>
@@ -1571,10 +1601,12 @@ function renderReinstall(vm) {
             <span class="hint" data-os="cloudinit container">At least 12 characters. Leave empty if you only want to sign in with an SSH key.</span>
             <span class="hint" data-os="windows">At least 12 characters with three of: lowercase, uppercase, numbers, symbols.</span>
           </label>
-          <label data-os="cloudinit container">SSH public keys
+          <div data-os="cloudinit container" data-key-fields>
+          ${state.sshKeys?.length ? `<fieldset><legend>Saved SSH keys</legend>${state.sshKeys.map(k=>`<label class="check"><input type="checkbox" name="sshKeyIds" value="${k.id}" checked><span>${esc(k.name)} <span class="mono small muted">${esc(k.fingerprint)}</span></span></label>`).join('')}</fieldset>` : '<p class="hint">You can save reusable public keys under Account.</p>'}
+          <label>SSH public keys
             <textarea name="sshKeys" rows="3" spellcheck="false" placeholder="ssh-ed25519 AAAA… you@laptop"></textarea>
-            <span class="hint">Optional. One key per line.</span>
-          </label>
+            <span class="hint">One public key per line. Your private keys stay on your device.</span>
+          </label></div>
         </fieldset>
 
         <fieldset>
@@ -1606,10 +1638,13 @@ async function submitReinstall(form) {
   const tpl = findTemplate(form.templateId.value);
   const windows = tpl?.setup === 'windows';
   const body = { templateId: tpl.id };
-  if (form.password.value) body.password = form.password.value;
+  if (!form.password.disabled && form.password.value) body.password = form.password.value;
   if (!windows) {
     if (tpl.setup === 'cloudinit') body.username = form.username.value.trim();
-    if (form.sshKeys.value.trim()) body.sshKeys = form.sshKeys.value.trim();
+    body.loginMethod = form.loginMethod.value;
+    const ids = [...form.querySelectorAll('[name=sshKeyIds]:checked:not(:disabled)')].map(k=>k.value);
+    if(ids.length) body.sshKeyIds = ids;
+    if (!form.sshKeys.disabled && form.sshKeys.value.trim()) body.sshKeys = form.sshKeys.value.trim();
   }
   const button = $('#reinstall-submit');
   button.disabled = true;
@@ -1637,9 +1672,10 @@ async function submitCreate(form) {
   }
   const tpl = findTemplate(form.templateId.value);
   const windows = tpl?.setup === 'windows';
-  const password = form.password.value;
-  const sshKeys = windows ? '' : form.sshKeys.value.trim();
-  if (!password && !sshKeys) {
+  const password = form.password.disabled ? '' : form.password.value;
+  const sshKeys = windows || form.sshKeys.disabled ? '' : form.sshKeys.value.trim();
+  const sshKeyIds = [...form.querySelectorAll('[name=sshKeyIds]:checked:not(:disabled)')].map(k=>k.value);
+  if (!password && !sshKeys && !sshKeyIds.length) {
     err.textContent = windows
       ? 'Set a password for the Administrator account.'
       : 'Set a password or add an SSH key so you can sign in to the server.';
@@ -1654,6 +1690,7 @@ async function submitCreate(form) {
     diskGb: Number(form.diskGb.value),
     ...(password ? { password } : {}),
     ...(sshKeys ? { sshKeys } : {}),
+    ...(!windows ? { loginMethod: form.loginMethod.value, ...(sshKeyIds.length ? { sshKeyIds } : {}) } : {}),
   };
   const button = $('#create-submit');
   button.disabled = true;
@@ -1948,6 +1985,7 @@ function openAccount() {
       </header>
       <div id="security"></div>
       <div id="passkeys" class="account-section"></div>
+      <div id="ssh-keys" class="account-section"></div>
       ${state.account.panelVersion ? `
         <section class="security-card about-panel">
           <div>
@@ -1958,6 +1996,7 @@ function openAccount() {
     </div>`;
   renderSecurity($('#security'), { email: state.me.email });
   renderPasskeys($('#passkeys'));
+  renderSshKeys($('#ssh-keys'));
 }
 $('#nav-account').addEventListener('click', openAccount);
 

@@ -32,7 +32,7 @@ Placement excludes offline and maintenance nodes, unreadable allocations, insuff
 Both running and stopped guests count toward CPU and memory admission.
 The initial policy allows one allocated vCPU per logical CPU.
 Pending operations reserve capacity before the clone request.
-Full cluster VM audit access is required to count other guests.
+The token needs full cluster VM audit access to count other guests.
 Clone, pool configuration and datastore allocation rights are also required.
 
 Direct cross-node clones require shared template volumes accessible from the destination.
@@ -134,11 +134,39 @@ Resize, storage changes, add-ons and adoption need additional allocation events.
 Migration must not create a second charge for the same allocation.
 Do not activate invoicing until allocation reconciliation and pricing rules are complete.
 
+## Guest sign-in
+
+Customers save public SSH keys under **Account**.
+The personal library shows each key's fingerprint and keeps other users' keys private.
+Customers can select saved keys or paste public keys when creating a server.
+They choose a username and one of three methods: SSH keys, username/password, or both.
+Password login does not require an SSH key.
+SSH key login does not require a password.
+
+The panel configures cloud-init through the Proxmox API after cloning and before first boot.
+It sets `ciuser`, encoded `sshkeys` and `cipassword` according to the selected method.
+It clears cloud-init credentials from the template when the customer does not select that method.
+Templates need a cloud-init drive and generated user data that accepts these settings.
+The panel rejects custom user data that overrides the generated sign-in configuration.
+Images must also be clean of embedded operating-system credentials before the provider offers them.
+
+Customers connect to the VM's private address with their selected username and credentials.
+The existing guest network must provide connectivity from their private access network.
+OIDC authenticates the panel session. Guest sign-in uses the credentials selected for that VM.
+Saved keys belong to the signed-in user across their customer memberships.
+Removing a saved key affects future provisioning. It does not remove keys from existing VMs.
+Legacy reinstall can select new sign-in settings. Catalog reinstall remains a separate delivery step.
+Windows images continue to use their Administrator password. Containers use root with the selected credentials.
+
+The authenticated `/api/ssh-keys` endpoints list, save and remove personal public keys.
+Create and reinstall requests accept `sshKeyIds` and `loginMethod` values of `ssh`, `password` or `both`.
+The server resolves key IDs against the acting user's library before making Proxmox changes.
+
 ## Basic backup execution
 
 Catalog customers must select the backup service before creating backups or schedules.
 Ridge and Summit include the service fee. They do not automatically select or schedule the service.
-Existing archives remain visible when the service is deselected.
+Existing archives remain visible after the customer deselects the service.
 The provider's configured backup storage must have an enabled Basic mapping on the VM's node.
 The job checks live availability, allocation permissions and free capacity before calling vzdump.
 Queued and scheduled jobs use the same checks.
@@ -146,8 +174,8 @@ Jobs retain their selected destination across settings changes and restarts.
 
 A durable reservation enforces the customer's shared backup quota before the dump starts.
 The quota uses logical VM disk capacity, including retained archives after VM deletion.
-Archive bytes are recorded separately. They do not represent physical PBS consumption.
-Checked archive deletion releases its reservation.
+The ledger records archive bytes separately. They do not represent physical PBS consumption.
+The panel releases the reservation after it checks archive deletion.
 Unknown outcomes retain their quota.
 Providers can discover a completed archive by its job marker under **Compute operations**.
 An unresolved submission without a matching archive needs manual provider investigation.
@@ -161,7 +189,7 @@ These records prepare usage accounting. They do not activate prices or invoices.
 4. Pilot direct clones and stopped clone-and-migrate placement across eligible nodes.
 5. Make resize, reinstall, restore and deletion preserve the offering and allocation history.
 6. Integrate native Proxmox HA after storage, networking, spare capacity and service acceptance pass their checks.
-7. Connect backup entitlements, Basic destinations, storage limits and usage records to existing backup operations.
+7. Pilot backup entitlements, Basic destinations, storage limits and retained usage records.
 8. Pilot with new VMs. Adopt or migrate existing VMs explicitly.
 
 Use native Proxmox scheduling for HA guests. Avoid a second controller that independently migrates the same VMs.
@@ -177,7 +205,6 @@ Customers select offerings. Administrators maintain the infrastructure that can 
 | POST | `/api/admin/compute-catalog/preview` | Check observed capacity for a size, class and disk capacity. |
 | GET | `/api/admin/customers/:id/compute-profile` | Read a customer's offerings. |
 | PUT | `/api/admin/customers/:id/compute-profile` | Save offerings with current profile and catalog revisions. |
-
 | GET | `/api/admin/compute-backup-reservations` | Review Basic backup reservations. |
 | POST | `/api/admin/compute-backup-reservations/:id/reconcile` | Find a completed archive after an uncertain result. |
 | GET | `/api/admin/compute-operations` | Review recent operations and provider diagnostics. |

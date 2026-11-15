@@ -1,3 +1,4 @@
+import { resolveSshKeys } from './ssh-keys.js';
 import { db, audit } from './db.js';
 import { config } from './config.js';
 import { resolveOffering, selectPlacement, checkOfferingRevision, verifyComputeDeleted } from './compute-placement.js';
@@ -134,6 +135,15 @@ export class ProvisionError extends Error {
 
 /** Sign-in rules per setup method (shared by create and reinstall). Mutates spec. */
 function applySetupRules(spec, offered) {
+  if (offered.setup !== 'windows') {
+    if (!spec.loginMethod && !spec.password && !spec.sshKeys?.trim()) throw new ProvisionError(400, 'Set a password or add an SSH key so you can sign in');
+    const method = spec.loginMethod ?? (spec.password ? (spec.sshKeys?.trim() ? 'both' : 'password') : 'ssh');
+    if (!['ssh','password','both'].includes(method)) throw new ProvisionError(400, 'Choose a sign-in method');
+    if ((method === 'ssh' || method === 'both') && !spec.sshKeys?.trim()) throw new ProvisionError(400, 'Select a saved SSH key or paste a public key');
+    if ((method === 'password' || method === 'both') && !spec.password) throw new ProvisionError(400, 'Set a password for this sign-in method');
+    if ((method === 'ssh' && spec.password) || (method === 'password' && spec.sshKeys?.trim())) throw new ProvisionError(400, 'Credentials must match the selected sign-in method');
+    spec.loginMethod = method;
+  } else if (spec.loginMethod || spec.sshKeyIds?.length) throw new ProvisionError(400, 'Windows images use their Administrator password');
   if (offered.setup === 'windows') {
     if (spec.hostname.length > 15) {
       throw new ProvisionError(400, 'Windows computer names can be at most 15 characters');
@@ -158,6 +168,13 @@ function applySetupRules(spec, offered) {
   spec.setup = offered.setup;
 }
 
+async function checkImageLogin(offered, tpl) {
+  if (offered.setup !== 'cloudinit') return;
+  const image = await pve.get(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/config`);
+  if (/(^|,)user=/.test(image.cicustom ?? '')) throw new ProvisionError(400, 'This image has custom cloud-init user data that overrides sign-in settings. The provider must prepare a compatible image.');
+  if (!Object.entries(image).some(([k,v]) => /^(ide|scsi|sata)\d+$/.test(k) && String(v).includes('cloudinit'))) throw new ProvisionError(400, 'The provider must add a cloud-init drive to this image before it can configure sign-in.');
+}
+
 /**
  * Validates quota, reserves a VMID and starts the clone. Returns the new VMID
  * right away; configuration, disk resize and first start continue in the
@@ -175,6 +192,7 @@ export async function createServer(req, spec) {
   }
   const account = grant ? withLimits(req.account, grant) : req.account;
   if (!account.can_create) throw new ProvisionError(403, 'Creating servers is not enabled for your account');
+  resolveSshKeys(req.account.id, spec);
   const offering = resolveOffering(customer.id, spec);
   if (!offering && (!Number.isInteger(spec.cores) || !Number.isInteger(spec.memoryMb))) throw new ProvisionError(400, 'CPU and memory are required');
   const key = req.headers?.['idempotency-key'];
@@ -212,6 +230,7 @@ export async function createServer(req, spec) {
     }
 
     applySetupRules(spec, offered);
+    await checkImageLogin(offered, tpl);
 
     // Quota
     const limits = limitsOf(account);
@@ -237,7 +256,7 @@ export async function createServer(req, spec) {
       db.prepare(`INSERT INTO vms(vmid,user_id,type,state,created_by_customer,spec,progress,expires_at,expiry_set_at,access_managed,customer_id)
         VALUES(?,?,?,'creating',1,?,?,?,?,?,?)`).run(id, account.id, isContainer ? 'lxc' : 'qemu', JSON.stringify({
           cores: spec.cores, memoryMb: spec.memoryMb, diskGb: spec.diskGb, template: spec.templateId, hostname: spec.hostname,
-          ...(offering ? { offering, operationId } : {}), ...(grant ? { accessRuleId: grant.id, pool: destinationPool } : {}),
+          loginMethod: spec.loginMethod, ...(offering ? { offering, operationId } : {}), ...(grant ? { accessRuleId: grant.id, pool: destinationPool } : {}),
         }), 'Copying the image', expiryForNewServer(account.id,new Date(),customer.id), new Date().toISOString(), grant ? 1 : 0, customer.id);
     };
     const { vmid, upid, operationId = null, targetNode = tpl?.node, taskNode = tpl?.node } = await serial(async () => {
@@ -383,6 +402,9 @@ async function finishCreate(actor, node, vmid, cloneUpid, spec, tplRow, net, {
       params.ciuser = spec.username;
       params.ipconfig0 = tplRow.ipconfig || 'ip=dhcp';
       if (spec.password) params.cipassword = spec.password;
+      // Clear image credentials that the customer did not select.
+      if (spec.loginMethod === 'ssh') params.delete = 'cipassword';
+      if (spec.loginMethod === 'password') params.delete = 'sshkeys';
       // Proxmox expects the key list URL-encoded (in addition to form encoding).
       if (spec.sshKeys) params.sshkeys = encodeURIComponent(`${spec.sshKeys.trim()}\n`);
     }
@@ -465,6 +487,7 @@ function lifecycleAccount(req,row,customer) {
 }
 
 export async function reinstallServer(req, row, input) {
+  resolveSshKeys(req.account.id, input);
   if (computeManaged(row.vmid)) throw new ProvisionError(409, 'Catalog reinstall is not available yet. This protects the VM’s storage and placement.');
   const customer=requireCustomer(req);
   const account=lifecycleAccount(req,row,customer);
@@ -516,6 +539,7 @@ export async function reinstallServer(req, row, input) {
     }
     applySetupRules(spec, offered);
     const tpl = isContainer ? null : await locateTemplate(spec.templateId);
+    await checkImageLogin(offered, tpl);
     const templateRef = isContainer ? spec.templateId : tpl.vmid;
     let destinationPool=config.pve.pool;
     if(customer.pools.length) {
