@@ -1,4 +1,6 @@
-import { db } from './db.js';
+import { randomUUID } from 'node:crypto';
+import { db, audit } from './db.js';
+import { capacityLocks } from './capacity.js';
 import { config } from './config.js';
 import { authorizationFor } from './oidc-authorizations.js';
 
@@ -43,11 +45,11 @@ const unpack = (row) =>
       }
     : null;
 export function customerById(id) {
-  return unpack(db.prepare('SELECT * FROM customers WHERE id=?').get(id));
+  return unpack(db.prepare('SELECT * FROM customers WHERE id=? AND deleted_at IS NULL').get(id));
 }
 export function allCustomers() {
   return db
-    .prepare('SELECT * FROM customers ORDER BY name,id')
+    .prepare('SELECT * FROM customers WHERE deleted_at IS NULL ORDER BY name,id')
     .all()
     .map((r) => ({
       ...unpack(r),
@@ -58,7 +60,7 @@ export function allCustomers() {
     }));
 }
 export function personalCustomer(userId) {
-  let row = db.prepare('SELECT * FROM customers WHERE legacy_user_id=?').get(userId);
+  let row = db.prepare('SELECT * FROM customers WHERE legacy_user_id=? AND deleted_at IS NULL').get(userId);
   const user = db.prepare('SELECT * FROM users WHERE id=?').get(userId);
   if (!row && user && !user.tenant_initialized) {
     db.exec('BEGIN IMMEDIATE');
@@ -220,6 +222,73 @@ export function removeMembership(customerId, userId) {
     customerId,
     userId,
   );
+}
+export function customerDeletionPlan(id) {
+  const customer = customerById(id);
+  if (!customer) throw error('Customer not found', 404);
+  const count = (table, condition = '') =>
+    db.prepare(`SELECT count(*) AS n FROM ${table} WHERE customer_id=? ${condition}`).get(id).n;
+  const blockers = [
+    ['Assigned VMs', count('vms')],
+    ['Private networks', count('networks')],
+    ['VPN devices', count('vpn_devices')],
+    ['Tailscale connections', count('tailscale')],
+    ['Backups', count('backups')],
+    ['Backup schedules', count('backup_schedules')],
+    ['Backup or restore jobs', count('backup_jobs', "AND state NOT IN ('done','failed')")],
+    ['Windows update jobs', count('winupdates', "AND state NOT IN ('done','failed')")],
+    ['Provisioning or resize operations', capacityLocks.has(`customer:${id}`) ? 1 : 0],
+  ]
+    .filter(([, count]) => count > 0)
+    .map(([label, count]) => ({ label, count }));
+  const policy = JSON.parse(
+    db.prepare("SELECT value FROM settings WHERE key='access_policy'").get()?.value ?? '{"rules":[]}',
+  );
+  return {
+    id: customer.id,
+    name: customer.name,
+    slug: customer.slug,
+    revision: customer.revision,
+    pools: customer.pools,
+    members: customerMembers(id).length,
+    rules: policy.rules.filter((r) => r.customerId === id).map((r) => ({ id: r.id, name: r.name })),
+    blockers,
+  };
+}
+export function deleteCustomer(req, id, revision) {
+  // No await inside this transaction: creation reservations and resource checks
+  // cannot change between the final check and revoking the customer's access.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const plan = customerDeletionPlan(id);
+    if (plan.revision !== revision)
+      throw error('Customer changed in another session. Close this dialog and review it again.', 409);
+    if (plan.blockers.length) {
+      const resources = plan.blockers.map((b) => `${b.label} (${b.count})`).join(', ');
+      throw error(`Move or remove customer resources and wait for active jobs before deleting: ${resources}`, 409);
+    }
+    const policy = db.prepare("SELECT value FROM settings WHERE key='access_policy'").get();
+    if (policy) {
+      const updated = JSON.parse(policy.value);
+      updated.rules = updated.rules.filter((r) => r.customerId !== id);
+      db.prepare(
+        "UPDATE settings SET value=?,updated_at=datetime('now') WHERE key='access_policy'",
+      ).run(JSON.stringify(updated));
+    }
+    db.prepare('DELETE FROM customer_memberships WHERE customer_id=?').run(id);
+    db.prepare('DELETE FROM customer_membership_blocks WHERE customer_id=?').run(id);
+    // Retain an inaccessible tombstone for historical FKs and to prevent ID
+    // reuse by stale customer-context cookies. Release the human-readable slug.
+    db.prepare(
+      `UPDATE customers SET deleted_at=datetime('now'),enabled=0,slug=?,
+      pools='[]',domains='[]',sso_groups='[]',sso_entitlements='[]',revision=revision+1 WHERE id=?`,
+    ).run(`deleted-${id}-${randomUUID()}`, id);
+    audit({ account: req.account, ip: req.ip, customerId: id }, null, 'admin_customer_delete', plan);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 export function rememberMemberships(user, claims) {
   const auth = {

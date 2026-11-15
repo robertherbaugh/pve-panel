@@ -131,3 +131,45 @@ test('customer editor, memberships and VM assignment support shared customers an
   ).toBe(401);
   expect((await customer.get('/api/vms/101')).status).toBe(200);
 });
+
+test('customer deletion shows resource blockers and requires explicit confirmation', async ({ page, context }) => {
+  await context.addCookies(cookies(admin));
+  await page.goto(stack.adminUrl);
+  await page.getByRole('tab', { name: 'Customers', exact: true }).click();
+  const dev = (await admin.get('/api/admin/customers')).json.customers.find((c) => c.slug === 'tacticalid-dev');
+  await page.locator(`[data-customer="${dev.id}"]`).getByRole('button', { name: 'Delete', exact: true }).click();
+  const blocked = page.getByRole('dialog', { name: `Delete customer ${dev.name}`, exact: true });
+  await expect(blocked).toContainText('Assigned VMs: 1');
+  await expect(blocked.getByRole('button', { name: 'Delete customer', exact: true })).toBeDisabled();
+  await expect(blocked.getByLabel('Type customer ID to confirm')).toBeDisabled();
+  await blocked.getByRole('button', { name: 'Cancel', exact: true }).click();
+
+  const c = (await admin.post('/api/admin/customers', {
+    name: 'Former customer', slug: 'former-customer', enabled: true, pools: [], sso: { required: false },
+  })).json;
+  await admin.put(`/api/admin/customers/${c.id}/members`, { userId: alice.id, role: 'viewer' });
+  await page.getByRole('tab', { name: 'Users', exact: true }).click();
+  await page.getByRole('tab', { name: 'Customers', exact: true }).click();
+  const row = page.locator(`[data-customer="${c.id}"]`);
+  await row.getByRole('button', { name: 'Delete', exact: true }).click();
+  const d = page.getByRole('dialog', { name: `Delete customer ${c.name}`, exact: true });
+  await expect(d).toContainText('1 user membership');
+  await expect(d).toContainText('No assigned resources or active jobs block deletion.');
+  await d.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(row).toBeVisible();
+  await row.getByRole('button', { name: 'Delete', exact: true }).click();
+  const confirm = d.getByRole('button', { name: 'Delete customer', exact: true });
+  await expect(d.getByLabel('Type customer ID to confirm')).toBeEnabled();
+  await expect(confirm).toBeDisabled();
+  await d.getByLabel('Type customer ID to confirm').fill('wrong-customer');
+  await expect(confirm).toBeDisabled();
+  await d.getByLabel('Type customer ID to confirm').fill(c.slug);
+  await expect(confirm).toBeEnabled();
+  if (process.env.CUSTOMER_DELETE_SCREENSHOT)
+    await page.screenshot({ path: process.env.CUSTOMER_DELETE_SCREENSHOT, fullPage: true });
+  await confirm.click();
+  await expect(d).toHaveCount(0);
+  await expect(row).toHaveCount(0);
+  expect((await admin.get('/api/admin/users')).json.some((u) => u.id === alice.id)).toBe(true);
+  expect((await admin.get(`/api/admin/customers/${dev.id}/members`)).status).toBe(200);
+});
