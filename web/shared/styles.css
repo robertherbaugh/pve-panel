@@ -1273,3 +1273,28 @@ dialog.access-rule-modal { width: min(900px, calc(100vw - 32px)); max-width: non
 .security-card.compute-section > div:first-child { min-width: 0; }
 
 .ha-terms { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; font: inherit; }
+
+/* Shared admin sections and inventory controls. */
+.admin-section-panel { min-width: 0; }
+.admin-section-panel > :first-child { margin-top: 0; }
+.admin-table-toolbar, .admin-table-footer, .admin-table-pages {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+}
+.admin-table-toolbar { margin: 16px 0 10px; align-items: end; }
+.admin-table-toolbar label, .admin-table-filters label { display: grid; gap: 5px; font-size: 13px; color: var(--muted); }
+.admin-table-toolbar label:first-child { flex: 1; min-width: min(220px, 100%); }
+.admin-table-toolbar input, .admin-table-filters input { min-width: 0; width: 100%; }
+.admin-table-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 10px 0; padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); }
+.admin-table-footer { justify-content: space-between; margin: 12px 0 24px; }
+.admin-table-pages label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.admin-table-page { width: 66px; }
+.admin-table-sort { border: 0; padding: 0; background: transparent; font: inherit; color: inherit; cursor: pointer; text-align: left; }
+.admin-table-sort span { color: var(--muted); white-space: nowrap; }
+@media (max-width: 600px) {
+  .admin-table-pages { gap: 6px; }
+  .admin-table-pages .btn { padding: 7px 9px; }
+  .admin-table-pages { width: 100%; }
+  .admin-table-toolbar { align-items: stretch; }
+  .admin-table-toolbar label:first-child { flex-basis: 100%; }
+  .admin-table-page { width: 50px; }
+}

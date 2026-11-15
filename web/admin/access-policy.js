@@ -1,3 +1,4 @@
+import { sectionTabs } from './sections.js';
 import { resourcePicker } from './resource-picker.js';
 
 // Authentik owns membership. Each edit here maps trusted claims to resources.
@@ -29,13 +30,18 @@ export function renderAccessPolicy(container, { data, api, esc, toast, fail, con
       </form>
     </section>
     <div class="section-head access-table-head"><div><h3>Permission sets</h3><p class="muted small">Edit a set to change its members, resources or operations. Toggles save immediately.</p></div><button type="button" class="btn primary" data-add-rule>Add permission set</button></div>
-    <div class="table-wrap"><table class="table access-table">
+    <div class="table-wrap"><table class="table access-table" data-admin-table="Permission sets">
       <thead><tr><th>Permission set</th><th>SSO matching</th><th>Resources</th><th>Operations</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead>
       <tbody data-access-rules></tbody>
     </table></div>
     <p data-policy-error class="form-error" role="alert"></p>
     <div class="access-inventory-status"><p class="muted small" data-inventory-status role="status">Loading Proxmox resources…</p><button type="button" class="btn" data-refresh-resources>Refresh Proxmox resources</button></div>
     <p class="muted small">SSO group changes take effect after a fresh sign-in. Shared access expires after the configured authorization lifetime, including open consoles.</p>`;
+  sectionTabs(container, 'Permissions', [
+    { id: 'sets', label: 'Permission sets', nodes: [container.querySelector('.access-table-head'), container.querySelector('.table-wrap')] },
+    { id: 'settings', label: 'Access settings', nodes: [container.querySelector('.access-settings'), container.lastElementChild] },
+    { id: 'resources', label: 'Resource discovery', nodes: [container.querySelector('.access-inventory-status')] },
+  ], { before: container.firstElementChild });
   const settings = container.querySelector('#access-settings-form');
   const error = container.querySelector('[data-policy-error]');
   const rows = container.querySelector('[data-access-rules]');

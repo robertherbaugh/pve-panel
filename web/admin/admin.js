@@ -1,3 +1,5 @@
+import { ACTION_LABELS } from '/shared/audit-actions.js';
+import { sectionTabs, markedSections } from './sections.js';
 import { icon } from '/shared/icons.js';
 import { renderSecurity } from '/shared/twofa.js';
 import { renderPasskeys } from '/shared/passkeys.js';
@@ -10,103 +12,7 @@ import { renderComputeCatalog } from './compute-catalog.js';
 // Administration area: assign servers, manage customers, read the activity log.
 // Receives the shared helpers from app.js so it behaves like the rest of the panel.
 
-const ACTION_LABELS = {
-  login: 'Signed in',
-  login_failed: 'Failed sign-in',
-  power_start: 'Started server',
-  power_shutdown: 'Shut down server',
-  power_reboot: 'Restarted server',
-  power_stop: 'Force stopped server',
-  snapshot_create: 'Took snapshot',
-  snapshot_rollback: 'Rolled back snapshot',
-  snapshot_delete: 'Deleted snapshot',
-  console_open: 'Opened console',
-  admin_user_create: 'Added user',
-  admin_user_delete: 'Deleted user',
-  admin_password_reset: 'Reset password',
-  admin_grant: 'Granted admin rights',
-  admin_revoke: 'Removed admin rights',
-  admin_vm_assign: 'Assigned server',
-  admin_vm_unassign: 'Unassigned server',
-  admin_vm_rename: 'Renamed server',
-  admin_login: 'Signed in to administration',
-  admin_login_failed: 'Failed administration sign-in',
-  admin_limits: 'Changed limits',
-  admin_template_offer: 'Offered template',
-  admin_template_withdraw: 'Withdrew template',
-  server_create_started: 'Started creating server',
-  server_created: 'Created server',
-  server_create_failed: 'Server creation failed',
-  server_delete_started: 'Started deleting server',
-  server_deleted: 'Deleted server',
-  vpn_device_add: 'Added VPN device',
-  admin_power_start: 'Started server (admin)',
-  admin_power_shutdown: 'Shut down server (admin)',
-  admin_power_reboot: 'Restarted server (admin)',
-  admin_power_stop: 'Force stopped server (admin)',
-  admin_server_deleted: 'Deleted server (admin)',
-  admin_user_delete_started: 'Started deleting customer',
-  admin_user_delete_failed: 'Deleting customer failed',
-  admin_invite_sent: 'Sent invitation',
-  server_resized: 'Changed server size',
-  server_reinstall_started: 'Started reinstalling server',
-  server_expired: 'Server expired and was stopped',
-  server_expired_deleted: 'Expired server deleted',
-  server_expiry_extended: 'Extended server expiry',
-  server_expiry_set: 'Set server expiry',
-  server_expiry_removed: 'Removed server expiry',
-  admin_expiry_rule: 'Changed customer expiry rule',
-  admin_expiry_settings: 'Changed expiry settings',
-  admin_expiry_run: 'Ran expiry check',
-  admin_backup_settings: 'Changed backup settings',
-  admin_backup_limit: 'Changed backup limit',
-  backup_create: 'Started a backup',
-  backup_created: 'Backup made',
-  backup_failed: 'Backup failed',
-  backup_delete: 'Deleted a backup',
-  backup_restore_started: 'Started a restore',
-  backup_restored: 'Restored a backup',
-  backup_restore_failed: 'Restore failed',
-  backup_schedule: 'Changed automatic backups',
-  backup_file_download: 'Downloaded a file from a backup',
-  admin_setup_check: 'Ran the setup check',
-  admin_setup_check_settings: 'Changed setup check alerts',
-  admin_appearance: 'Changed the color scheme',
-  admin_branding: 'Changed branding',
-  admin_compute_catalog: 'Changed compute catalog',
-  admin_customer_compute_profile: 'Changed customer offerings',
-  admin_winupdates: 'Changed Windows update setting',
-  winupdate_started: 'Started Windows updates',
-  winupdate_finished: 'Windows updates finished',
-  winupdate_failed: 'Windows updates failed',
-  server_reinstalled: 'Reinstalled server',
-  server_reinstall_failed: 'Reinstalling server failed',
-  invite_accepted: 'Accepted invitation, password set',
-  admin_email_settings: 'Changed email settings',
-  admin_email_settings_removed: 'Removed email settings',
-  admin_email_test: 'Sent test email',
-  twofa_enabled: 'Turned on two-factor authentication',
-  twofa_disabled: 'Turned off two-factor authentication',
-  twofa_recovery_codes: 'Created new recovery codes',
-  admin_twofa_require: 'Required two-factor authentication',
-  admin_twofa_unrequire: 'Made two-factor authentication optional',
-  admin_twofa_reset: 'Reset two-factor authentication',
-  passkey_added: 'Added a passkey',
-  passkey_removed: 'Removed a passkey',
-  admin_passkeys_removed: 'Removed passkeys of a user',
-  cli_twofa_reset: 'Reset two-factor authentication (command line)',
-  sso_login_failed: 'Failed single sign-on',
-  admin_sso_login_failed: 'Failed single sign-on (administration)',
-  sso_account_linked: 'Linked account to single sign-on',
-  sso_account_created: 'Account created by single sign-on',
-  admin_sso_unlink: 'Unlinked account from single sign-on',
-  tailscale_connect_started: 'Started connecting to Tailscale',
-  tailscale_connected: 'Connected to Tailscale',
-  tailscale_connect_failed: 'Tailscale connection failed',
-  tailscale_disconnected: 'Disconnected from Tailscale',
-  vpn_device_remove: 'Removed VPN device',
-  admin_vpn_device_remove: 'Removed VPN device',
-};
+
 
 export function generatePassword(length = 16) {
   // No look-alike characters (0/O, 1/l/I), so it can be read out or typed by hand.
@@ -144,7 +50,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   let disposeAccessPolicy = null;
   let loadRevision = 0;
   const st = {
-    tab: 'servers', settingsTab: 'branding', users: [], vms: [], audit: [], filter: '', newUser: null,
+    tab: 'servers', settingsTab: 'branding', users: [], vms: [], newUser: null,
     templates: [], storages: {}, vpn: null,
   };
   const gb = (mb) => `${+(mb / 1024).toFixed(1)} GB`;
@@ -196,7 +102,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
         ({ templates: st.templates, storages: st.storages } = t);
         st.ct = { images: t.containers ?? [], missing: t.missingContainers ?? [], storages: t.containerStorages ?? {}, networksEnabled: t.networksEnabled };
       } else {
-        st.audit = await api('/api/admin/audit?limit=200');
+        // Activity loads its own paginated history after the table is mounted.
       }
       if (revision !== loadRevision) return;
       renderTab();
@@ -267,6 +173,10 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
       body.innerHTML = '<div id="admin-2fa"></div><div id="admin-passkeys" class="account-section"></div>';
       renderSecurity(body.querySelector('#admin-2fa'), { email: getMe().email });
       renderPasskeys(body.querySelector('#admin-passkeys'));
+      sectionTabs(body, 'Your account', [
+        { id: 'twofa', label: 'Two-factor authentication', nodes: [body.querySelector('#admin-2fa')] },
+        { id: 'passkeys', label: 'Passkeys', nodes: [body.querySelector('#admin-passkeys')] },
+      ], { before: body.firstElementChild });
     }
     if (st.tab === 'about') renderAbout();
     if (st.tab === 'setup') renderSetupCheck();
@@ -282,11 +192,10 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
     root.querySelector('#admin-body').innerHTML = `
       <div class="section-head">
         <p class="muted" style="margin:0" id="vm-summary"></p>
-        <input type="search" id="vm-filter" class="filter" placeholder="Filter by ID, name or customer"
-               value="${esc(st.filter)}" aria-label="Filter servers">
+
       </div>
       <div class="table-wrap">
-        <table class="table">
+        <table class="table" data-admin-table="Servers">
           <thead><tr>
             <th>ID</th><th>Name in Proxmox</th><th>Node</th><th>Customer</th><th>Name shown to customer</th><th><span class="sr-only">Actions</span></th>
           </tr></thead>
@@ -295,6 +204,8 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
       </div>
       <p class="muted small">Changes save immediately. Customers see a server as soon as it's assigned to them.</p>`;
     renderServerRows();
+    const host = root.querySelector('#admin-body');
+    sectionTabs(host, 'Servers', [{ id: 'inventory', label: 'Inventory', nodes: [...host.children] }]);
   }
 
   /** Power and delete buttons, only for servers assigned to a customer. */
@@ -377,12 +288,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
     root.querySelector('#vm-summary').textContent =
       `${st.vms.length} servers in the cluster, ${assigned} assigned to customers.`;
 
-    const q = st.filter.trim().toLowerCase();
-    const rows = st.vms.filter((v) => !q
-      || String(v.vmid).includes(q)
-      || v.name.toLowerCase().includes(q)
-      || (v.customerName ?? v.owner ?? '').toLowerCase().includes(q)
-      || (v.label ?? '').toLowerCase().includes(q));
+    const rows = st.vms;
 
     const options = (selected) => `
       <option value="">Not assigned</option>
@@ -414,7 +320,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
         </td>
         <td class="actions">${serverActions(v)}</td>
       </tr>`).join('')
-      : `<tr><td colspan="6" class="muted">No servers match “${esc(st.filter)}”.</td></tr>`;
+      : `<tr><td colspan="6" class="muted">No servers in the cluster.</td></tr>`;
   }
 
   async function saveAssignment(row) {
@@ -471,7 +377,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
       </div>` : '';
 
     root.querySelector('#admin-body').innerHTML = `
-      <h2 class="h2">Add a user</h2><p class="muted">Manage identities here. Add users to organizations from the Customers tab.</p>
+      <section data-section="Add user"><h2 class="h2">Add a user</h2><p class="muted">Manage identities here. Add users to organizations from the Customers tab.</p>
       <form id="user-form" class="user-form" autocomplete="off">
         <label>Email <input name="email" type="email" required maxlength="254"></label>
         <label id="pw-field">Password
@@ -497,12 +403,14 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
           <input type="checkbox" name="requireTotp">
           <span>Require two-factor authentication <span class="muted">The user sets up an authenticator app at the first sign-in, before they can do anything else.</span></span>
         </label>
-      </form>
+      </form></section>
       ${note}
 
-      <div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Platform role</th><th>Customers</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      <section data-section="Directory"><div class="table-wrap"><table class="table" data-admin-table="Users"><thead><tr><th>User</th><th>Platform role</th><th>Customers</th><th>Status</th><th>Actions</th></tr></thead><tbody>
         ${st.users.map(u=>`<tr data-user="${u.id}"><td>${esc(u.email)}${u.id===me.id?' (you)':''}${u.ssoLinked?' <span class="tag">SSO</span>':''}</td><td>${u.isAdmin?'Administrator':'User'}</td><td>${[...new Set(u.customers.map(c=>c.name))].map(n=>`<span class="badge">${esc(n)}</span>`).join(' ')||'<span class="muted">No memberships</span>'}</td><td>${u.disabled?'Disabled':'Active'}</td><td class="actions"><button class="btn" data-twofa>Sign-in</button><button class="btn" data-reset>Reset password</button>${u.canCreate?'<button class="btn" data-limits>Personal plan</button>':''}${u.id!==me.id?`<button class="btn" data-toggle-admin>${u.isAdmin?'Remove admin':'Make admin'}</button><button class="btn ${u.disabled?'':'danger'}" data-disable-user>${u.disabled?'Enable':'Disable'}</button>`:''}</td></tr>`).join('')}
-      </tbody></table></div>`;
+      </tbody></table></div></section>`;
+    const host = root.querySelector('#admin-body');
+    sectionTabs(host, 'Users', ['Directory', 'Add user'].map(id => ({ id, label: id, nodes: [host.querySelector(`[data-section="${id}"]`)] })), { before: host.firstElementChild });
   }
 
   function watchDeletions() {
@@ -652,12 +560,13 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   function renderTemplates() {
     const body = root.querySelector('#admin-body');
     body.innerHTML = `
-      <h2 class="h2">VM templates</h2>
+      <section data-section="VM templates"><h2 class="h2">VM templates</h2>
       ${st.templates.length ? vmTemplatesTable() : `
         <p class="muted">No VM templates in the cluster. Prepare a VM with cloud-init (or a sysprep'd Windows), convert it to a
           template in Proxmox and add it to the panel's templates pool; it then appears here.</p>`}
-      <h2 class="h2">Container images (LXC)</h2>
-      ${containersTable()}`;
+      </section><section data-section="Container images"><h2 class="h2">Container images (LXC)</h2>
+      ${containersTable()}</section>`;
+    markedSections(body, 'Templates');
   }
 
   function containersTable() {
@@ -673,7 +582,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
           <button class="btn" data-ct-withdraw="${m.id}">Withdraw</button>`).join(' ')}</p></div>` : ''}
       ${ct.images.length ? `
         <div class="table-wrap">
-          <table class="table">
+          <table class="table" data-admin-table="Container images">
             <thead><tr>
               <th>Image in Proxmox</th><th>Offered</th><th>Name shown to customers</th><th>Disk storage</th>
               <th>Min. disk (GB)</th>${ct.networksEnabled ? '' : '<th>Bridge</th>'}<th>Nesting</th><th><span class="sr-only">Save</span></th>
@@ -706,7 +615,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
       <p class="muted" style="margin-top:-4px">Customers who may create servers can choose from the templates offered here.
         Linux templates are set up with cloud-init, Windows templates through the QEMU guest agent.</p>
       <div class="table-wrap">
-        <table class="table">
+        <table class="table" data-admin-table="VM templates">
           <thead><tr>
             <th>ID</th><th>Template in Proxmox</th><th>Offered</th><th>Name shown to customers</th>
             <th>Setup</th><th>Target storage</th><th>User</th><th>Network (cloud-init)</th><th><span class="sr-only">Save</span></th>
@@ -812,12 +721,12 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
     const stateWord = { connected: 'Connected', installing: 'Connecting…', disconnecting: 'Disconnecting…', failed: 'Failed' };
     const pill = { connected: 'pill-running', installing: 'pill-busy', disconnecting: 'pill-busy', failed: 'pill-failed' };
     return `
-      <h2 class="h2">Tailscale</h2>
+      <section data-section="Tailscale"><h2 class="h2">Tailscale</h2>
       <p class="muted" style="margin-top:-4px">Servers customers connected to their own tailnet. The panel doesn't
         see or manage the customers' Tailscale accounts.</p>
       ${ts.servers.length ? `
         <div class="table-wrap">
-          <table class="table">
+          <table class="table" data-admin-table="Tailscale connections">
             <thead><tr><th>Customer</th><th>Server</th><th>Mode</th><th>Tailscale address</th><th>State</th></tr></thead>
             <tbody>
               ${ts.servers.map((x) => `
@@ -830,7 +739,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
                 </tr>`).join('')}
             </tbody>
           </table>
-        </div>` : '<p class="muted">No server is connected to Tailscale yet.</p>'}`;
+        </div>` : '<p class="muted">No server is connected to Tailscale yet.</p>'}</section>`;
   }
 
   function renderVpn() {
@@ -838,19 +747,20 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
     const body = root.querySelector('#admin-body');
     if (!status.enabled) {
       body.innerHTML = `
-        <div class="empty">
+        <div class="empty" data-section="WireGuard">
           <h2>WireGuard VPN is switched off</h2>
           <p class="muted">Set up the WireGuard gateway VM and set <span class="mono">VPN_ENABLED=true</span>,
             <span class="mono">VPN_GATEWAY_VMID</span> and <span class="mono">VPN_ENDPOINT</span> in the panel's
             <span class="mono">.env</span>. The documentation (Networking → WireGuard VPN) has the steps.</p>
         </div>
         ${tailscaleSection()}`;
+      markedSections(body, 'VPN');
       return;
     }
     const since = (ts) => (ts == null ? 'unknown' : !ts ? 'Never'
       : Date.now() / 1000 - ts < 180 ? 'Connected now' : new Date(ts * 1000).toLocaleString());
     body.innerHTML = `
-      <dl class="specs cols-3">
+      <section data-section="WireGuard"><dl class="specs cols-3">
         <div><dt>Gateway</dt><dd>${status.reachable
           ? '<span class="led running"></span> Running' : '<span class="led failed"></span> Not reachable'}
           <span class="muted small">VM ${status.gatewayVmid}</span></dd></div>
@@ -865,7 +775,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
       </div>
       ${devices.length ? `
         <div class="table-wrap">
-          <table class="table">
+          <table class="table" data-admin-table="WireGuard devices">
             <thead><tr><th>Customer</th><th>Device</th><th>VPN address</th><th>Last connected</th><th>Added</th><th><span class="sr-only">Remove</span></th></tr></thead>
             <tbody>
               ${devices.map((d) => `
@@ -873,14 +783,15 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
                   <td>${esc(d.email ?? '–')}</td>
                   <td>${esc(d.name)}</td>
                   <td class="mono">${esc(d.address)}</td>
-                  <td>${esc(since(d.lastHandshake))}</td>
-                  <td class="muted">${utc(d.createdAt).toLocaleDateString()}</td>
+                  <td data-sort-value="${d.lastHandshake ?? 0}">${esc(since(d.lastHandshake))}</td>
+                  <td class="muted" data-sort-value="${utc(d.createdAt).getTime()}">${utc(d.createdAt).toLocaleDateString()}</td>
                   <td class="actions"><button class="btn danger" data-vpn-remove="${d.id}" data-name="${esc(d.name)}">Remove</button></td>
                 </tr>`).join('')}
             </tbody>
           </table>
         </div>` : '<p class="muted">No VPN devices yet. Customers add them under “VPN access”.</p>'}
-      ${tailscaleSection()}`;
+      </section>${tailscaleSection()}`;
+    markedSections(body, 'VPN');
   }
 
   // ---- expiry ---------------------------------------------------------------
@@ -1293,7 +1204,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
       const items = shown.filter((c) => c.group === id);
       if (!items.length) return '';
       return `
-        <section class="check-group">
+        <section class="check-group" data-section="${esc(label)}">
           <h2 class="check-group-title">${esc(label)}</h2>
           <ul class="check-list">
             ${items.map((c) => `
@@ -1330,6 +1241,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
         <p class="muted small">The setup check only reads: it never changes anything in Proxmox. Commands under
           “How to fix” are run by you on a Proxmox node (or the panel host).</p>
       </div>`;
+    markedSections(body.querySelector('.setup-check'), 'Setup check');
   }
 
   // ---- about --------------------------------------------------------------
@@ -1356,11 +1268,10 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
 
     root.querySelector('#admin-body').innerHTML = `
       <div class="about">
-        <div class="about-head">
+        <section data-section="Version"><div class="about-head">
           <span class="about-version">v${esc(a.version)}</span>
           <span class="pill ${a.isRelease ? 'pill-running' : 'pill-busy'}">${a.isRelease ? 'Release' : 'Development build'}</span>
         </div>
-        ${status}
         <dl class="specs cols-3">
           <div><dt>Version</dt><dd class="mono">${a.releaseUrl && a.isRelease ? ext(a.releaseUrl, esc(a.version)) : esc(a.version)}</dd></div>
           <div><dt>Commit</dt><dd class="mono">${a.commit ? (a.commitUrl ? ext(a.commitUrl, esc(a.commit.slice(0, 7))) : esc(a.commit.slice(0, 7))) : '–'}</dd></div>
@@ -1369,7 +1280,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
           <div><dt>Node.js</dt><dd class="mono">${esc(a.node)}</dd></div>
           <div><dt>Source</dt><dd>${a.repoUrl ? ext(a.repoUrl, esc(a.repoUrl.replace(/^https:\/\//, ''))) : '–'}</dd></div>
         </dl>
-        <div class="row">
+        </section><section data-section="Updates">${status}<div class="row">
           <button class="btn" data-check-updates>Check for updates now</button>
           ${u.checkedAt ? `<span class="muted small">Last checked ${esc(date(u.checkedAt))}</span>` : ''}
         </div>
@@ -1382,44 +1293,49 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
           <li><strong>Command line:</strong> <span class="mono">docker compose pull && docker compose up -d</span></li>
         </ol>
         <p class="muted small">If you pinned a release in <span class="mono">PANEL_IMAGE</span>, change the version
-          there first. Your data stays in the volume; database changes are applied automatically at start.</p>
+          there first. Your data stays in the volume; database changes are applied automatically at start.</p></section>
       </div>`;
+    markedSections(root.querySelector('.about'), 'About');
   }
 
   // ---- activity ---------------------------------------------------------
   function renderActivity() {
     root.querySelector('#admin-body').innerHTML = `
       <div class="section-head">
-        <p class="muted" style="margin:0">The last ${st.audit.length} events, newest first.</p>
+        <p class="muted" style="margin:0">Search and review the full event history.</p>
         <button class="btn" data-refresh-audit>Refresh</button>
       </div>
       <div class="table-wrap">
-        <table class="table">
-          <thead><tr><th>Time</th><th>Who</th><th>What</th><th>Server</th><th>IP address</th></tr></thead>
+        <table class="table" data-admin-table="Activity" data-default-sort="time" data-default-order="desc">
+          <thead><tr><th data-key="time">Time</th><th data-key="who">Who</th><th data-key="what">What</th><th data-key="server">Server</th><th data-key="ip">IP address</th></tr></thead>
           <tbody>
-            ${st.audit.map((a) => {
-              let detail = '';
-              try {
-                const d = a.detail ? JSON.parse(a.detail) : null;
-                if (d?.email && (a.action.startsWith('admin_') || a.action.endsWith('login_failed'))) detail = d.email;
-                if (d?.hostname) detail = d.hostname;
-                if (d?.label && a.action.startsWith('admin_template')) detail = d.label;
-                if (d?.error) detail = d.error;
-                if (d?.reason && a.action.includes('sso')) detail = d.reason;
-                if (d?.passkey) detail = d.reason ? `passkey: ${d.reason}` : 'with a passkey';
-              } catch { /* ignore */ }
-              return `
-              <tr class="${a.action.endsWith('login_failed') || a.action.endsWith('_failed') ? 'row-warn' : ''}">
-                <td class="nowrap">${utc(a.createdAt).toLocaleString()}</td>
-                <td>${esc(a.email ?? '–')}</td>
-                <td>${esc(ACTION_LABELS[a.action] ?? a.action)}${detail ? ` <span class="muted">${esc(detail)}</span>` : ''}</td>
-                <td class="mono">${a.vmid ?? ''}</td>
-                <td class="mono muted">${esc(a.ip ?? '')}</td>
-              </tr>`;
-            }).join('')}
+
           </tbody>
         </table>
       </div>`;
+    const row = (a) => {
+      let detail = '';
+      try {
+        const d = a.detail ? JSON.parse(a.detail) : null;
+        if (d?.email && (a.action.startsWith('admin_') || a.action.endsWith('login_failed'))) detail = d.email;
+        if (d?.hostname) detail = d.hostname;
+        if (d?.label && a.action.startsWith('admin_template')) detail = d.label;
+        if (d?.error) detail = d.error;
+        if (d?.reason && a.action.includes('sso')) detail = d.reason;
+        if (d?.passkey) detail = d.reason ? `passkey: ${d.reason}` : 'with a passkey';
+      } catch { /* ignore */ }
+      return `
+      <tr class="${a.action.endsWith('login_failed') || a.action.endsWith('_failed') ? 'row-warn' : ''}">
+        <td class="nowrap">${utc(a.createdAt).toLocaleString()}</td>
+        <td>${esc(a.email ?? '–')}</td>
+        <td>${esc(ACTION_LABELS[a.action] ?? a.action)}${detail ? ` <span class="muted">${esc(detail)}</span>` : ''}</td>
+        <td class="mono">${a.vmid ?? ''}</td>
+        <td class="mono muted">${esc(a.ip ?? '')}</td>
+      </tr>`;
+    };
+    const host = root.querySelector('#admin-body');
+    host.querySelector('table').adminRemote = { endpoint: '/api/admin/audit', row };
+    sectionTabs(host, 'Activity', [{ id: 'history', label: 'Event history', nodes: [...host.children] }]);
   }
 
   // ---- events (bound once) ----------------------------------------------
@@ -1480,7 +1396,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
     }
 
     if (t.hasAttribute('data-refresh-audit')) {
-      load();
+      root.querySelector('table[data-admin-table="Activity"]').dispatchEvent(new Event('admin-table-refresh'));
       return;
     }
 
@@ -1698,13 +1614,6 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
 
   root.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && e.target.matches('[data-label]')) e.target.blur(); // blur fires "change"
-  });
-
-  root.addEventListener('input', (e) => {
-    if (e.target.id === 'vm-filter') {
-      st.filter = e.target.value;
-      renderServerRows();
-    }
   });
 
   root.addEventListener('submit', (e) => {

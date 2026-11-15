@@ -55,13 +55,23 @@ for (const mode of ['light', 'dark']) {
 
         await admin.goto(A());
         await expect(admin.locator('#vm-rows tr').first()).toBeVisible();
-        await check(admin, scheme, 'admin servers');
-        for (const [tab, ready] of [['users', 'tr[data-user]'], ['settings', '[data-branding-editor]'], ['account', '.security-card'], ['setup', '.check-item'], ['about', '.about']]) {
+        await admin.getByRole('group', { name: 'Servers table controls', exact: true }).getByRole('button', { name: 'Filters', exact: true }).click();
+        await admin.getByRole('button', { name: 'Sort Servers by ID', exact: true }).click();
+        await check(admin, scheme, 'admin servers and table controls');
+        for (const [tab, ready] of [['compute', '[data-admin-table="VM sizes"]'], ['customers', '[data-admin-table=Customers]'], ['permissions', '[data-admin-table="Permission sets"]'], ['activity', '[data-admin-table=Activity]'], ['templates', '[data-admin-table="VM templates"]'], ['users', 'tr[data-user]'], ['settings', '[data-branding-editor]'], ['account', '.security-card'], ['setup', '.check-item'], ['about', '.about']]) {
           await admin.locator(`[data-admin-tab=${tab}]`).click();
           await expect(admin.locator(ready).first()).toBeVisible();
           // every "How to fix" open, so its text and commands are measured too
           if (tab === 'setup') await admin.evaluate(() => document.querySelectorAll('.check-fix').forEach((d) => { d.open = true; }));
           await check(admin, scheme, `admin ${tab}`);
+          if (tab !== 'settings') {
+            const sections = admin.getByRole('tablist').first().getByRole('tab');
+            for (let i = 0; i < await sections.count(); i++) {
+              await sections.nth(i).click();
+              if (tab === 'setup') await admin.evaluate(() => document.querySelectorAll('.check-fix').forEach(d => { d.open = true; }));
+              await check(admin, scheme, `admin ${tab} section ${i + 1}`);
+            }
+          }
           if (tab === 'settings') {
             for (const name of ['Appearance', 'Email', 'Backups', 'Server expiry', 'Windows updates']) {
               await admin.getByRole('tab', { name, exact: true }).click();

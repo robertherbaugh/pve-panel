@@ -1,3 +1,4 @@
+import { sectionTabs } from './sections.js';
 import { resourcePicker } from './resource-picker.js';
 import { icon } from '../shared/icons.js';
 
@@ -18,8 +19,9 @@ export function renderCustomers(host, { data, users, api, esc, toast, fail, conf
     `<label>${label}<input name="${name}" value="${esc(value ?? '')}" ${attrs}></label>`;
   function render() {
     host.innerHTML = `<div class="section-head"><div><h2 class="h2">Customers</h2><p class="muted">Each customer has its own users, resources and limits. Users may belong to several customers.</p></div><button class="btn primary" data-add-customer>Add customer</button></div>
-      <div class="table-wrap"><table class="table"><thead><tr><th>Customer</th><th>Resource pools</th><th>Membership</th><th>Users</th><th>Status</th><th>Actions</th></tr></thead><tbody>${customers.map((c) => `<tr data-customer="${c.id}"><td><strong>${esc(c.name)}</strong><span class="muted small access-block">${esc(c.slug)}${c.legacy ? ' · migrated personal customer' : ''}</span></td><td>${c.pools.length ? c.pools.map((p) => `<span class="badge">${esc(p)}</span>`).join(' ') : '<span class="muted">Explicit VM assignments</span>'}</td><td>${c.sso.groups.length || c.sso.entitlements.length ? 'SSO mapping' : 'Manual membership'}${c.allowedDomains.length ? `<span class="muted small access-block">${esc(c.allowedDomains.join(', '))}</span>` : ''}</td><td>${c.members}</td><td><span class="pill ${c.enabled ? 'pill-running' : ''}">${c.enabled ? 'Enabled' : 'Disabled'}</span></td><td class="actions"><button class="btn" data-members>Members</button><button class="btn" data-edit-customer>Edit</button><button class="btn danger" data-delete-customer>Delete</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No customers yet.</td></tr>'}</tbody></table></div>
+      <div class="table-wrap"><table class="table" data-admin-table="Customers"><thead><tr><th>Customer</th><th>Resource pools</th><th>Membership</th><th>Users</th><th>Status</th><th>Actions</th></tr></thead><tbody>${customers.map((c) => `<tr data-customer="${c.id}"><td><strong>${esc(c.name)}</strong><span class="muted small access-block">${esc(c.slug)}${c.legacy ? ' · migrated personal customer' : ''}</span></td><td>${c.pools.length ? c.pools.map((p) => `<span class="badge">${esc(p)}</span>`).join(' ') : '<span class="muted">Explicit VM assignments</span>'}</td><td>${c.sso.groups.length || c.sso.entitlements.length ? 'SSO mapping' : 'Manual membership'}${c.allowedDomains.length ? `<span class="muted small access-block">${esc(c.allowedDomains.join(', '))}</span>` : ''}</td><td>${c.members}</td><td><span class="pill ${c.enabled ? 'pill-running' : ''}">${c.enabled ? 'Enabled' : 'Disabled'}</span></td><td class="actions"><button class="btn" data-members>Members</button><button class="btn" data-edit-customer>Edit</button><button class="btn danger" data-delete-customer>Delete</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No customers yet.</td></tr>'}</tbody></table></div>
       <p class="muted small">A pool can belong to one customer. SSO mappings establish membership; permission sets grant operations inside that customer. Domains alone never grant membership.</p>`;
+    sectionTabs(host, 'Customers', [{ id: 'directory', label: 'Directory', nodes: [...host.children] }]);
     host.querySelector('[data-add-customer]').onclick = () => edit();
     host
       .querySelectorAll('[data-edit-customer]')
@@ -256,7 +258,7 @@ export function renderCustomers(host, { data, users, api, esc, toast, fail, conf
       const result = await api(`/api/admin/customers/${c.id}/members`);
       if (!d.isConnected) return;
       d.querySelector('[data-member-list]').innerHTML =
-        `<div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Role</th><th>Source</th><th>Actions</th></tr></thead><tbody>${result.members.map((m) => `<tr><td>${esc(m.email)}${m.disabled ? ' (disabled)' : ''}</td><td>${esc(m.role)}</td><td>${m.source === 'oidc' ? 'SSO mapping' : 'Manual'}</td><td><button class="btn danger" data-remove="${m.userId}">Remove</button></td></tr>`).join('') || '<tr><td colspan="4" class="muted">No users yet. SSO members appear after sign-in.</td></tr>'}</tbody></table></div>`;
+        `<div class="table-wrap"><table class="table" data-admin-table="Customer members" data-table-instance="${c.id}"><thead><tr><th>User</th><th>Role</th><th>Source</th><th>Actions</th></tr></thead><tbody>${result.members.map((m) => `<tr><td>${esc(m.email)}${m.disabled ? ' (disabled)' : ''}</td><td>${esc(m.role)}</td><td>${m.source === 'oidc' ? 'SSO mapping' : 'Manual'}</td><td><button class="btn danger" data-remove="${m.userId}">Remove</button></td></tr>`).join('') || '<tr><td colspan="4" class="muted">No users yet. SSO members appear after sign-in.</td></tr>'}</tbody></table></div>`;
       d.querySelectorAll('[data-remove]').forEach(
         (b) =>
           (b.onclick = async () => {

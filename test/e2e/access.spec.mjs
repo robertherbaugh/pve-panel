@@ -127,11 +127,13 @@ test('administrator edits mappings; customer chooses a destination and sees perm
   await context.addCookies(cookies(admin));
   await page.goto(stack.adminUrl);
   await page.locator('[data-admin-tab=permissions]').click();
+  await page.getByRole('tab', { name: 'Access settings', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Access permissions' })).toBeVisible();
   await page.locator('[name=enabled]').check();
   await expect(page.locator('[name=domains]')).toHaveCount(0);
   await page.getByRole('button', { name: 'Save access settings', exact: true }).click();
   await expect(page.locator('[data-access-status]')).toHaveText('SSO access enabled');
+  await page.getByRole('tab', { name: 'Permission sets', exact: true }).click();
   for (const [id, pool, cores] of [['development', 'tacid-dev', 2], ['production', 'tacid-prod', 4]]) {
     await page.locator('[data-add-rule]').click();
     const rule = page.getByRole('dialog', { name: 'Add permission set', exact: true });

@@ -27,6 +27,7 @@ test('provider configures sizes, Basic backup destinations, customer add-ons and
     await expect(d).toHaveCount(0);
     await expect(page.locator('tr').filter({ has: page.getByText('Small', { exact: true }) })).toContainText('Enabled');
 
+    await page.getByRole('tab', { name: 'Storage classes', exact: true }).click();
     await page.getByRole('button', { name: 'Edit Basic', exact: true }).click();
     d = page.getByRole('dialog');
     await d.getByLabel('Storage class enabled', { exact: true }).check();
@@ -47,6 +48,7 @@ test('provider configures sizes, Basic backup destinations, customer add-ons and
     await expect(d.locator('[data-backup]')).toHaveCount(0);
     await d.getByRole('button', { name: 'Cancel', exact: true }).click();
 
+    await page.getByRole('tab', { name: 'Customer offerings', exact: true }).click();
     await page.locator('tr').filter({ hasText: 'pilot@example.com' }).getByRole('button', { name: 'Edit offerings', exact: true }).click();
     d = page.getByRole('dialog');
     await d.getByRole('combobox', { name: 'Service tier', exact: true }).selectOption('ridge');
@@ -65,12 +67,14 @@ test('provider configures sizes, Basic backup destinations, customer add-ons and
     await expect(d.getByLabel('Backup service selected', { exact: true })).toBeChecked();
     await d.getByRole('button', { name: 'Close', exact: true }).click();
 
+    await page.getByRole('tab', { name: 'Capacity', exact: true }).click();
     await page.getByRole('button', { name: 'Check capacity', exact: true }).click();
     await expect(page.locator('[data-preview-result]')).toContainText('Passes observed capacity checks');
     await expect(page.locator('[data-preview-result]')).toContainText('No capacity reserved');
     if (process.env.COMPUTE_CATALOG_SCREENSHOT) await page.screenshot({ path: process.env.COMPUTE_CATALOG_SCREENSHOT, fullPage: true });
     await page.reload();
     await page.getByRole('button', { name: 'Compute', exact: true }).click();
+    await page.getByRole('tab', { name: 'Storage classes', exact: true }).click();
     await expect(page.getByText('1 VM destinations · 1 backup destinations')).toBeVisible();
     assertNoErrors();
   } finally { await page.close(); await stack.stop(); }

@@ -8,6 +8,7 @@ test('offer a container image and create a container from it', async ({ page, br
   await adminPage.request.post(`${process.env.E2E_ADMIN_URL}/api/auth/login`, { data: { email: 'admin@example.com', password: 'correct-horse-battery' } });
   await adminPage.goto(process.env.E2E_ADMIN_URL);
   await adminPage.locator('[data-admin-tab=templates]').click();
+  await adminPage.getByRole('tab', { name: 'Container images', exact: true }).click();
   const row = adminPage.locator('tr[data-ct]', { hasText: 'debian-13-standard' });
   await expect(row).toBeVisible();
   await row.locator('[data-f=offered]').check();
