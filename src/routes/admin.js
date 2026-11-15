@@ -1,3 +1,6 @@
+import { startVmDeletion, deletionFor } from '../vm-deletion.js';
+import { assertComputeIdle } from '../compute-state.js';
+import { catalogPower, assertNoHa } from '../compute-ha.js';
 import { adminTable } from '../admin-table.js';
 import { ACTION_LABELS } from '../../web/shared/audit-actions.js';
 import { computeManaged } from '../compute-state.js';
@@ -37,6 +40,7 @@ const policyResponse = (policy) => ({ policy, actions: ACTIONS, revision: policy
 
 
 function transferError(vmid, row) {
+  if (deletionFor(vmid)) return 'Wait until the server deletion is reconciled';
   if (computeManaged(vmid)) return 'Catalog allocations must be deleted or explicitly transferred with their reservation history';
   if (['creating','deleting'].includes(row?.state) || activeRun(vmid) || db.prepare("SELECT 1 FROM backup_jobs WHERE vmid=? AND state IN ('queued','running')").get(vmid)) return 'Wait until the server’s current operation finishes before changing its customer';
   if (db.prepare('SELECT 1 FROM tailscale WHERE vmid=?').get(vmid)) return 'Disconnect Tailscale before changing this server’s customer';
@@ -328,11 +332,13 @@ export default async function adminRoutes(app) {
     const list = [...guests.values()]
       .filter((g) => !g.template)
       .map((g) => {
-        const o = owners.get(Number(g.vmid));
+        const o = owners.get(Number(g.vmid)), deletion = deletionFor(Number(g.vmid));
         return {
           vmid: Number(g.vmid), name: g.name ?? '', node: g.node, type: g.type, status: g.status,
           userId: o?.user_id ?? null, customerId:o?.customer_id??null,customerName:o?.customer_name??null, owner: o?.email ?? null, label: o?.label ?? null,
-          state: o?.state ?? null, createdByCustomer: !!o?.created_by_customer,
+          protected: isProtected(Number(g.vmid), g),
+          deletion: deletion ? { state: deletion.state, error: deletion.error } : null,
+          state: deletion ? deletion.state === 'review' ? 'failed' : 'deleting' : o?.state ?? 'ready', createdByCustomer: !!o?.created_by_customer,
           expiry: o ? expiryInfo(o, expSettings) : null, expiryManual: !!o?.expiry_manual,
         };
       });
@@ -496,15 +502,10 @@ export default async function adminRoutes(app) {
   });
 
   // ---- Acting on customer servers ------------------------------------------
-  // Only servers assigned to a customer; the VPN gateway and templates never.
+  // Assigned and unassigned guests; the VPN gateway and templates are protected.
   async function customerServer(req) {
     const vmid = Number(req.params.vmid);
-    const row = db.prepare('SELECT * FROM vms WHERE vmid = ?').get(vmid);
-    if (!row) {
-      const err = new Error('Only servers assigned to a customer can be managed here');
-      err.statusCode = 404;
-      throw err;
-    }
+    const row = db.prepare('SELECT * FROM vms WHERE vmid = ?').get(vmid) ?? { vmid, state: 'ready', customer_id: null };
     const guest = await locateGuest(vmid);
     if (isProtected(vmid, guest)) {
       const err = new Error('This server is protected');
@@ -521,24 +522,23 @@ export default async function adminRoutes(app) {
       return reply.code(400).send({ error: `Unsupported action "${action}"` });
     }
     if (row.state !== 'ready') return reply.code(409).send({ error: 'Wait until the current operation has finished' });
-    const upid = await pve.post(`${guestPath(guest)}/status/${action}`);
+    assertComputeIdle(guest.vmid);
+    if (activeRun(guest.vmid)) return reply.code(409).send({ error: 'Wait until Windows updates finish' });
+    if ((await pve.get(`${guestPath(guest)}/config`)).lock) return reply.code(409).send({ error: 'Wait until Proxmox unlocks this VM' });
+    const ha = await catalogPower(req, row, guest, action);
+    if (!ha) await assertNoHa(guest.vmid);
+    assertComputeIdle(guest.vmid);
+    const upid = ha ? ha.upid : await pve.post(`${guestPath(guest)}/status/${action}`);
     invalidateGuestCache();
     audit(req, guest.vmid, `admin_power_${action}`);
     return { task: typeof upid === 'string' && upid.startsWith('UPID:') ? upid : null };
   });
 
-  // Stops (if needed) and destroys the server with its disks, in the background.
+  // Deletion task identity survives restarts, even for unassigned guests.
   app.delete('/api/admin/vms/:vmid/server', async (req, reply) => {
     const { row, guest } = await customerServer(req);
-    if (row.state === 'creating' || row.state === 'deleting') {
-      return reply.code(409).send({ error: 'Wait until the current operation has finished' });
-    }
-    const actor = { account: { id: req.account.id }, ip: req.ip };
-    destroyServer(actor, guest.vmid).catch((err) => {
-      db.prepare("UPDATE vms SET state = 'failed', error = ? WHERE vmid = ?")
-        .run(`Deleting failed: ${err.message}`.slice(0, 500), guest.vmid);
-    });
-    return reply.code(202).send({ started: true });
+    if (!row.user_id && req.body?.confirmVmid !== guest.vmid) return reply.code(400).send({ error: 'Confirm the VM ID to delete this unassigned server' });
+    return reply.code(202).send(await startVmDeletion(req, row, { admin: true }));
   });
 
   // Progress of any task (admins see all)

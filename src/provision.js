@@ -791,47 +791,11 @@ export async function resizeServer(req, row, input) {
 
 // ---- Delete -----------------------------------------------------------------
 
-/** Destroys a customer-created server (must be stopped) and removes its record. */
+/** Deletes an explicitly authorized server after it has stopped. */
 export async function deleteServer(req, row) {
-  assertComputeIdle(row.vmid);
-  if (computeManaged(row.vmid)) await assertNoHa(row.vmid);
-  const guests = await clusterGuests(true);
-  const guest = guests.get(row.vmid);
-
-  if (!guest) {
-    // Unresolved clones are blocked above. Only verified absence releases an allocation.
-    await verifyComputeDeleted(row.vmid);
-    releaseCompute(row.vmid);
-    db.prepare('DELETE FROM vms WHERE vmid = ?').run(row.vmid);
-    audit(req, row.vmid, 'server_deleted');
-    return { removed: true };
-  }
-  if (guest.status !== 'stopped') {
-    throw new ProvisionError(409, 'Shut down the server before deleting it');
-  }
-
-  const path = guestPath(guest); // VM or container
-  if (computeManaged(row.vmid) && (await pve.get(`${path}/config`)).lock) throw new ProvisionError(409, 'Wait until Proxmox unlocks this VM');
-  const upid = await pve.del(path, { purge: 1, 'destroy-unreferenced-disks': 1 });
-  db.prepare("UPDATE vms SET state = 'deleting' WHERE vmid = ?").run(row.vmid);
-  audit(req, row.vmid, 'server_delete_started');
-
-  const actor = { account: { id: req.account.id }, customerId:row.customer_id, ip: req.ip };
-  waitTask(guest.node, upid)
-    .then(async () => {
-      await verifyComputeDeleted(row.vmid);
-      releaseCompute(row.vmid);
-      db.prepare('DELETE FROM vms WHERE vmid = ?').run(row.vmid);
-      audit(actor, row.vmid, 'server_deleted');
-      await forgetServerBackups(row.vmid, guest.node);
-    })
-    .catch((err) => {
-      db.prepare("UPDATE vms SET state = 'failed', error = ? WHERE vmid = ?")
-        .run(`Deleting failed: ${err.message}`.slice(0, 500), row.vmid);
-    })
-    .finally(invalidateGuestCache);
-
-  return { removed: false };
+  const { startVmDeletion } = await import('./vm-deletion.js');
+  const { authorizedRow } = await import('./access.js');
+  return startVmDeletion(req, row, { authorize: () => authorizedRow(req, row.vmid, 'delete') });
 }
 
 // Recovery follows accepted clone tasks. It never resubmits an ambiguous clone.

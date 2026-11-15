@@ -214,9 +214,11 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
     sectionTabs(host, 'Servers', [{ id: 'inventory', label: 'Inventory', nodes: [...host.children] }]);
   }
 
-  /** Power and delete buttons, only for servers assigned to a customer. */
+  /** Applicable admin actions also work before customer assignment. */
   function serverActions(v) {
-    if (!v.userId || v.status === 'missing') return '';
+    if (v.status === 'missing') return '';
+    if (v.deletion?.state === 'review') return '<span class="tag warn">Deletion needs review</span>';
+    if (v.protected) return '<span class="muted small">Protected</span>';
     const idle = v.state === 'ready' || v.state === 'failed';
     const on = v.status === 'running';
     const b = (action, ic, label, enabled, cls = '') =>
@@ -226,7 +228,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
       ${b('shutdown', 'power', 'Shut down', idle && on && v.state === 'ready')}
       ${b('reboot', 'restart', 'Restart', idle && on && v.state === 'ready')}
       ${b('stop', 'stop', 'Force stop', idle && on && v.state === 'ready')}
-      ${b('expiry', 'clock', 'Expiry', true)}
+      ${v.userId ? b('expiry', 'clock', 'Expiry', true) : ''}
       ${b('delete', 'trash', 'Delete server', idle, 'danger')}
     </span>`;
   }
@@ -260,13 +262,13 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   async function serverAction(vm, action) {
     if (action === 'expiry') { editServerExpiry(vm); return; }
     if (action === 'delete') {
-      const answer = await promptText(`Type ${vm.vmid} to delete “${vm.name}” of ${vm.owner}`, {
+      const answer = await promptText(`Type ${vm.vmid} to delete “${vm.name}” ${vm.customerName ? `for ${vm.customerName}` : '(not assigned)'}`, {
         hint: 'The server is stopped if needed and deleted with its disks and snapshots. The customer loses it immediately.',
         okLabel: 'Delete server', pattern: String(vm.vmid), danger: true,
       });
       if (answer !== String(vm.vmid)) return;
       try {
-        await api(`/api/admin/vms/${vm.vmid}/server`, { method: 'DELETE' });
+        await api(`/api/admin/vms/${vm.vmid}/server`, { method: 'DELETE', body: { confirmVmid: vm.vmid } });
         toast(`Deleting ${vm.name}`);
         await load({ quiet: true });
         watch(() => !st.vms.some((x) => x.vmid === vm.vmid && x.state === 'deleting'));

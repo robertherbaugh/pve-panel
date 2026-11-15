@@ -1,3 +1,4 @@
+import { startDeletionRecovery } from './vm-deletion.js';
 import retainedBackupRoutes from './compute-retained-backups.js';
 import computeServiceRoutes from './compute-services.js';
 import sshKeyRoutes from './ssh-keys.js';
@@ -159,6 +160,7 @@ startSetupCheckScheduler(admin.log);
 startBackupScheduler(admin.log);
 startComputeRecovery(admin.log);
 startBillingReconciliation(admin.log);
+startDeletionRecovery(admin.log);
 
 await customer.listen({ port: config.port, host: config.host });
 await admin.listen({ port: config.adminPort, host: config.adminHost });

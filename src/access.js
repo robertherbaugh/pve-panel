@@ -14,7 +14,7 @@ export const ACTIONS = Object.freeze([
 ]);
 export const DEFAULT_POLICY = Object.freeze({ version: 1, enabled: false, allowedDomains: [], rules: [] });
 const KEY = 'access_policy';
-const OWNER_ACTIONS = ['resize', 'reinstall', 'delete', 'extend', 'tailscale.read', 'tailscale.manage', 'backup.schedule', 'backup.restore'];
+const OWNER_ACTIONS = ['resize', 'reinstall', 'extend', 'tailscale.read', 'tailscale.manage', 'backup.schedule', 'backup.restore'];
 const LEGACY_ONLY = ['reinstall', 'backup.schedule', 'backup.restore', 'tailscale.read', 'tailscale.manage'];
 const pools = new Map();
 const fail = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
@@ -186,8 +186,9 @@ export async function authorizedRow(req,vmid,action='view') {
     const spec=JSON.parse(row.spec??'{}');
     if(!cloneRules(req).some(r=>r.id===spec.accessRuleId&&r.clone.pool===spec.pool)) throw missing();
   }
-  if(!row&&!['view','power','console','snapshot.create','snapshot.delete','snapshot.rollback'].includes(action)) throw missing();
-  return row??{vmid,customer_id:customer.id,user_id:null,type:guest.type,state:'ready',label:null,created_by_customer:0,access_managed:1};
+  if(!row&&!['view','power','console','snapshot.create','snapshot.delete','snapshot.rollback','delete'].includes(action)) throw missing();
+  const deletion = db.prepare('SELECT state,error FROM vm_deletions WHERE vmid=? AND finished_at IS NULL').get(vmid);
+  return row??{vmid,customer_id:customer.id,user_id:null,type:guest.type,state:deletion ? deletion.state === 'review' ? 'failed' : 'deleting' : 'ready',error:deletion?.error,label:null,created_by_customer:0,access_managed:1};
 }
 export async function visibleRows(req) {
   const customer=customerContext(req);
@@ -215,7 +216,7 @@ export async function capabilities(req,row,guest) {
       const spec=JSON.parse(row.spec??'{}');
       if(!cloneRules(req).some(r=>r.id===spec.accessRuleId&&r.clone.pool===spec.pool)) return false;
     }
-    if(row.user_id===null&&!['view','power','console','snapshot.create','snapshot.delete','snapshot.rollback'].includes(a)) return false;
+    if(row.user_id===null&&!['view','power','console','snapshot.create','snapshot.delete','snapshot.rollback','delete'].includes(a)) return false;
     return true;
   });
 }

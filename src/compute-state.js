@@ -83,6 +83,7 @@ export function heldReservations() {
 }
 export const activeComputeOperation = (vmid) => parse(db.prepare("SELECT * FROM compute_operations WHERE vmid=? AND state NOT IN ('complete','cancelled') ORDER BY created_at DESC LIMIT 1").get(vmid));
 export function assertComputeIdle(vmid) {
+  if (db.prepare('SELECT 1 FROM vm_deletions WHERE vmid=? AND finished_at IS NULL').get(vmid)) fail('This VM has a pending deletion. Reconcile its existing task first.');
   if (activeComputeOperation(vmid)) fail('This VM has an unresolved compute operation. The provider must reconcile it first.');
 }
 export const computeManaged = (vmid) => !!allocationFor(vmid) || !!activeComputeOperation(vmid);

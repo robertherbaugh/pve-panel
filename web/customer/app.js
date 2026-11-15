@@ -1738,7 +1738,7 @@ async function deleteServer(vm) {
   });
   if (answer !== String(vm.vmid)) return;
   try {
-    const { removed } = await api(`/api/vms/${vm.vmid}`, { method: 'DELETE' });
+    const { removed } = await api(`/api/vms/${vm.vmid}`, { method: 'DELETE', body: { confirmVmid: vm.vmid } });
     toast(removed ? `${vm.name} removed` : `Deleting ${vm.name}`);
     state.account = await api('/api/account');
     await loadList();
