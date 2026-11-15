@@ -1,5 +1,6 @@
-import { renderHaPolicy } from './compute-ha.js';
+import { renderAdoption } from './compute-adoption.js';
 import { renderRemoteAccess } from './compute-remote.js';
+import { renderHaPolicy } from './compute-ha.js';
 import { resourcePicker } from './resource-picker.js';
 
 export function renderComputeCatalog(host, { data, customers, api, esc, toast, fail, onSave }) {
@@ -46,7 +47,7 @@ export function renderComputeCatalog(host, { data, customers, api, esc, toast, f
         <div class="table-wrap"><table class="table"><thead><tr><th>Size</th><th>vCPU</th><th>Memory</th><th>Minimum disk</th><th>Status</th><th>Actions</th></tr></thead><tbody>${catalog.sizes.map((s) => `<tr><td><strong>${esc(s.name)}</strong><span class="access-block mono muted small">${esc(s.id)}</span></td><td>${s.cores}</td><td>${s.memoryMb / 1024} GiB</td><td>${s.minDiskGb} GiB</td><td>${s.enabled ? 'Enabled' : 'Disabled'}</td><td><button class="btn" data-size="${esc(s.id)}">Edit</button></td></tr>`).join('') || '<tr><td colspan="6">No sizes configured.</td></tr>'}</tbody></table></div></section>
       <section class="compute-section"><div class="section-head"><h3>Storage classes</h3></div><div class="compute-classes">${classes().map((c) => `<article class="security-card"><div class="section-head"><h4>${esc(c.name)}</h4><span class="pill">${c.enabled ? 'Enabled' : 'Disabled'}</span></div><p>${esc(c.description)}</p><p class="muted small">${c.bindings.filter((b) => b.purpose === 'vm').length} VM destinations${c.id === 'basic' ? ` · ${c.bindings.filter((b) => b.purpose === 'backup').length} backup destinations` : ''}</p><button class="btn" data-class="${c.id}">Edit ${esc(c.name)}</button></article>`).join('')}</div>
         <p class="hint">Backup storage always uses Basic. Verify the physical media before mapping a datastore. Proxmox storage types alone do not identify HDD, SSD or NVMe.</p></section>
-      <div data-ha-policy></div><div data-remote-access></div><section class="compute-section"><div class="section-head"><h3>Customer offerings</h3></div><p class="muted small">Service tier, sizes, storage and add-ons are separate from membership and VM permissions. HA remains off by default.</p>
+      <div data-ha-policy></div><div data-remote-access></div><div data-adoption></div><section class="compute-section"><div class="section-head"><h3>Customer offerings</h3></div><p class="muted small">Service tier, sizes, storage and add-ons are separate from membership and VM permissions. HA remains off by default.</p>
         <div class="table-wrap"><table class="table"><thead><tr><th>Customer</th><th>Actions</th></tr></thead><tbody>${customers.map((c) => `<tr><td>${esc(c.name)}${c.enabled ? '' : ' (disabled)'}</td><td><button class="btn" data-profile="${c.id}">Edit offerings</button></td></tr>`).join('') || '<tr><td colspan="2">Add a customer first.</td></tr>'}</tbody></table></div></section>
       <section class="security-card compute-section"><h3>Capacity preview</h3><p class="hint">Checks observed host and storage capacity only. It does not reserve resources or validate templates, networking, HA, maintenance state or allocation permissions.</p>
         <form data-preview class="settings"><div class="grid-2"><label>VM size<select name="sizeId" required>${catalog.sizes.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}${s.enabled ? '' : ' (disabled)'}</option>`).join('')}</select></label><label>Storage class<select name="storageClassId">${classes().map((c) => `<option value="${c.id}">${c.name}</option>`).join('')}</select></label>
@@ -56,6 +57,7 @@ export function renderComputeCatalog(host, { data, customers, api, esc, toast, f
       <p class="hint">Reservation billing continues while VMs are stopped. Backup service fees and Basic storage usage are separate. No prices or invoices are active here.</p>`;
     renderHaPolicy(host.querySelector('[data-ha-policy]'),{api,esc});
     renderRemoteAccess(host.querySelector('[data-remote-access]'),{api,esc});
+    renderAdoption(host.querySelector('[data-adoption]'),{api,esc,catalog,customers});
     host.querySelector('[data-operations-refresh]').onclick = loadOperations;
     loadOperations();
     host.querySelector('[data-add-size]').onclick = () => editSize();
