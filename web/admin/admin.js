@@ -3,6 +3,7 @@ import { renderSecurity } from '/shared/twofa.js';
 import { renderPasskeys } from '/shared/passkeys.js';
 import { applyScheme } from '/shared/icons.js';
 import { renderCustomers } from './customers.js';
+import { renderBranding } from './branding.js';
 import { renderAccessPolicy } from './access-policy.js';
 
 // Administration area: assign servers, manage customers, read the activity log.
@@ -70,6 +71,7 @@ const ACTION_LABELS = {
   admin_setup_check: 'Ran the setup check',
   admin_setup_check_settings: 'Changed setup check alerts',
   admin_appearance: 'Changed the color scheme',
+  admin_branding: 'Changed branding',
   admin_winupdates: 'Changed Windows update setting',
   winupdate_started: 'Started Windows updates',
   winupdate_finished: 'Windows updates finished',
@@ -133,9 +135,9 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
         [st.users, st.email] = await Promise.all([api('/api/admin/users'), api('/api/admin/settings/email')]);
         if (!quiet) setTimeout(watchDeletions);
       } else if (st.tab === 'settings') {
-        [st.email, st.expiry, st.appearance, st.winupdates, st.backups] = await Promise.all([
+        [st.email, st.expiry, st.appearance, st.winupdates, st.backups, st.branding] = await Promise.all([
           api('/api/admin/settings/email'), api('/api/admin/settings/expiry'), api('/api/admin/settings/appearance'),
-          api('/api/admin/settings/winupdates'), api('/api/admin/settings/backups'),
+          api('/api/admin/settings/winupdates'), api('/api/admin/settings/backups'), api('/api/admin/settings/branding'),
         ]);
       } else if (st.tab === 'setup') {
         st.setup = await api('/api/admin/setup-check');
@@ -870,6 +872,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
     const ap = st.appearance;
     root.querySelector('#admin-body').innerHTML = `
       <div class="settings">
+        <section class="security-card settings-card"><div class="settings-head"><h2 class="twofa-title">Branding</h2></div><div data-branding-editor></div></section>
         <section class="security-card settings-card">
           <div class="settings-head">
             <h2 class="twofa-title"><span class="title-ico">${icon('palette', { size: 18 })}</span>Appearance</h2>
@@ -1028,6 +1031,9 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
           </form>
         </section>
       </div>`;
+    renderBranding(root.querySelector('[data-branding-editor]'), { data: st.branding, api, esc, toast, fail, confirmAction,
+      onSave: (saved) => { st.branding = saved; },
+    });
     warnPlain();
   }
 

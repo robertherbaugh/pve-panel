@@ -7,10 +7,10 @@ function required(key) {
 }
 
 export const config = {
-  // Product name shown in both interfaces (sign-in, sidebar, page titles)
+  // One-time defaults imported by branding.js. Saved branding lives in SQLite.
   brand: {
     name: (process.env.PANEL_NAME || 'PVE Panel').trim().slice(0, 40),
-    // Optional own icon files (os-windows.svg, os-linux.png, …); see the documentation: https://sebastianflint.github.io/pve-panel
+    // Legacy fixed image files, imported once when database branding is initialized.
     dir: process.env.BRANDING_DIR || null,
   },
   // Customer panel

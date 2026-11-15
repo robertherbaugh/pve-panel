@@ -50,7 +50,7 @@ export function icon(name, { size = 18, cls = '' } = {}) {
   return `<svg class="icon ${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] ?? paths.server}</svg>`;
 }
 
-// Own icon files from the branding folder, set by applyBrand(): { windows: url, … }
+// Database branding images, set by applyBrand(): { windows: url, … }
 let customOsIcons = {};
 export const customOsIcon = (os) => customOsIcons[os] ?? null;
 
@@ -61,15 +61,15 @@ export function osIcon(os, size = 20) {
   return icon(os === 'windows' ? 'windows' : os === 'linux' ? 'linux' : 'server', { size, cls: 'os-glyph' });
 }
 
-// Own logo from the branding folder (remembered, so it shows without a flash of the default)
+// Remember the database logo to avoid a flash of the default.
 const LOGO_KEY = 'pve-panel.logo';
-const LOGO_URL = /^\/branding\/logo\.(svg|png|webp)$/;
+const LOGO_URL = /^\/branding\/logo\.(svg|png|webp|jpg)(\?v=[a-f0-9]{64})?$/;
 let customLogo = null;
 try { const l = localStorage.getItem(LOGO_KEY); if (LOGO_URL.test(l ?? '')) customLogo = l; } catch { /* ignore */ }
 
 /** Brand mark: the PVE Panel logo ("PV" with a server and a check). The letter takes
  *  the surrounding text color, so it fits every color scheme, light and dark; an own
- *  logo from the branding folder replaces it. */
+ *  uploaded logo replaces it. */
 const MARK = {
   p: 'M25.8 449.0C12.0 448.8 8.9 448.6 7.4 447.9C4.8 446.7 3.9 445.1 3.9 441.4C3.8 438.1 5.4 433.9 12.3 419.0C18.5 405.6 21.2 399.5 23.3 394.8C24.4 392.0 26.6 387.3 28.0 384.2C29.4 381.2 31.3 377.1 32.2 375.0C33.1 372.9 34.7 369.6 35.6 367.5C36.6 365.4 38.1 362.1 39.0 360.0C39.9 357.9 41.5 354.3 42.6 352.0C45.9 345.2 50.4 335.3 53.5 328.0C55.1 324.3 57.6 318.8 59.0 315.8C60.4 312.7 62.5 308.3 63.5 306.0C67.4 297.2 78.0 273.8 85.2 258.0C86.4 255.4 88.2 251.4 89.3 249.1C91.5 244.3 93.2 242.6 97.2 241.1C99.9 240.0 100.4 240.0 207.3 239.8C320.9 239.6 317.2 239.7 325.1 237.5C326.2 237.2 327.7 236.8 328.7 236.6C329.6 236.3 330.9 235.8 331.5 235.4C332.2 235.0 333.3 234.4 333.9 234.3C337.1 233.3 345.9 226.5 350.0 221.8C353.6 217.8 357.6 211.3 361.4 203.3C371.1 183.5 375.4 173.7 376.7 168.3C377.4 165.8 378.4 162.3 378.9 160.5C383.1 147.3 382.7 129.7 377.7 114.7C370.6 93.2 352.9 79.1 329.0 76.0C322.4 75.2 128.2 75.4 122.5 76.2C107.6 78.5 97.3 82.1 76.0 92.6C66.5 97.2 58.1 101.6 57.2 102.2C55.6 103.5 47.4 108.3 44.2 109.9C43.0 110.5 39.4 113.0 36.1 115.5C27.7 121.8 27.5 121.6 32.0 110.5C35.0 103.2 39.7 90.9 40.5 88.5C41.0 87.0 42.4 83.5 43.6 80.8C44.8 78.0 46.3 74.4 47.0 72.8C47.6 71.1 49.2 67.0 50.5 63.8C51.9 60.5 54.2 54.5 55.8 50.5C57.3 46.5 59.3 41.5 60.2 39.2C61.2 37.0 63.2 32.0 64.8 28.0C70.1 14.4 72.6 10.8 78.8 7.8C84.7 4.9 76.9 5.0 217.5 5.0C356.5 5.0 351.6 4.9 365.2 7.5C380.4 10.3 393.2 15.3 405.3 23.2C416.9 30.8 429.8 43.6 436.7 54.5C438.0 56.6 439.5 58.8 440.0 59.5C441.2 61.3 447.9 76.2 448.5 78.4C448.7 79.4 449.2 81.2 449.5 82.2C449.8 83.3 450.4 85.5 450.7 87.0C451.1 88.5 451.7 90.8 452.0 92.0C452.3 93.2 452.8 95.5 453.0 97.0C453.3 98.5 453.7 101.1 454.0 102.8C455.5 111.7 455.7 124.1 454.5 133.2C451.4 155.7 449.0 162.6 434.1 192.8C431.3 198.5 416.9 226.8 414.8 230.8C413.6 232.9 409.2 241.5 405.0 249.8C395.9 267.7 392.5 273.0 386.2 279.5C375.0 291.1 357.3 299.3 337.2 302.3C327.7 303.7 299.5 304.3 221.8 304.7C187.1 304.9 164.0 305.2 163.5 305.5C162.5 306.0 162.1 306.9 158.0 316.0C156.6 319.2 155.0 322.6 154.5 323.6C153.9 324.6 153.5 325.7 153.5 325.9C153.5 326.2 152.7 328.1 151.8 330.1C149.2 335.6 147.5 339.6 147.5 340.0C147.5 340.2 146.7 342.2 145.7 344.3C144.7 346.5 143.4 349.4 142.7 350.8C142.0 352.3 141.5 353.6 141.5 353.7C141.5 353.9 140.6 355.9 139.6 358.1C138.5 360.4 136.7 364.4 135.5 367.0C134.3 369.6 132.7 373.3 131.8 375.2C130.9 377.2 129.6 380.0 128.9 381.5C128.1 383.0 127.0 385.7 126.3 387.5C125.7 389.3 124.3 392.6 123.3 394.8C122.2 396.9 120.5 400.8 119.5 403.2C114.8 414.3 103.3 438.6 101.4 441.4C100.6 442.6 98.6 444.5 96.9 445.5C92.0 448.7 90.1 448.9 67.0 449.0C55.9 449.0 45.7 449.1 44.5 449.2C43.3 449.3 34.8 449.2 25.8 449.0Z',
   unit: 'M125.4 223.9C120.0 222.7 114.4 218.2 111.7 213.0L110.2 210.2L110.2 195.0L110.2 179.8L111.6 177.0C113.4 173.3 118.1 168.8 121.8 167.2C123.7 166.4 126.2 165.8 129.0 165.5C135.7 164.9 318.0 164.9 322.7 165.5C330.6 166.6 336.2 170.5 339.5 177.2L341.2 180.6L341.4 193.2C341.6 203.8 341.5 206.3 340.8 209.0C338.8 216.7 333.7 221.7 325.6 223.8C323.1 224.4 310.7 224.5 225.0 224.4C171.2 224.4 126.4 224.2 125.4 223.9ZM175.2 152.0L125.2 151.8L121.8 150.1C115.5 146.8 111.0 140.9 110.3 134.8C110.1 133.4 110.2 126.8 110.4 120.2C110.7 110.1 110.9 107.9 111.6 106.8C112.1 106.1 112.5 105.3 112.5 104.9C112.5 103.8 116.0 99.1 117.9 97.7C121.5 94.9 125.4 93.3 128.4 93.4C130.0 93.4 131.7 93.4 132.2 93.3C132.8 93.3 176.6 93.3 229.5 93.3L325.8 93.2L329.6 95.1C334.2 97.3 337.3 100.3 339.3 104.4C340.6 106.9 340.8 108.0 341.1 113.8C341.9 129.7 341.5 136.6 339.4 140.7C337.0 145.6 332.2 149.7 327.2 151.4C324.4 152.3 272.7 152.5 175.2 152.0Z',
@@ -103,7 +103,11 @@ function applyLogo(url) {
   const changed = url !== customLogo;
   customLogo = url;
   try { if (url) localStorage.setItem(LOGO_KEY, url); else localStorage.removeItem(LOGO_KEY); } catch { /* ignore */ }
-  if (url) document.querySelectorAll('link[rel="icon"]').forEach((l) => { l.href = url; l.removeAttribute('type'); l.removeAttribute('sizes'); });
+  document.querySelectorAll('link[rel="icon"], link[rel="apple-touch-icon"]').forEach((l) => {
+    l.dataset.defaultHref ??= l.getAttribute('href');
+    l.href = url || l.dataset.defaultHref;
+    l.removeAttribute('type'); l.removeAttribute('sizes');
+  });
   if (!changed) return;
   document.querySelectorAll('[data-brand-mark]').forEach((el) => {
     const size = Number(el.firstElementChild?.getAttribute('height'));
@@ -115,7 +119,7 @@ function applyLogo(url) {
 export async function applyBrand(suffix = '') {
   let name = 'PVE Panel';
   try {
-    const r = await fetch('/api/brand');
+    const r = await fetch('/api/brand', { cache: 'no-store' });
     if (r.ok) {
       const b = await r.json();
       name = b.name || name;
