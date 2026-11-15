@@ -1424,6 +1424,14 @@ async function openResize() {
 }
 
 function renderResize(vm) {
+  if (vm.offering) {
+    const options=state.account.offerings;
+    $('#detail').innerHTML=`<div class="detail-inner"><button class="link-btn" data-back-to-server>Back to server</button><h1>Change size of ${esc(vm.name)}</h1>
+      <p class="muted">Stop the VM before applying a new size. Its storage class and datastore stay the same. Disks can only grow.</p>
+      <form id="resize-form" class="create-form"><label>VM size<select name="sizeId">${options.sizes.map(s=>`<option value="${esc(s.id)}" ${s.id===vm.offering.sizeId?'selected':''}>${esc(s.name)} — ${s.cores} vCPU, ${s.memoryMb/1024} GiB</option>`).join('')}</select></label>
+      <label>Disk (GiB)<input type="number" name="diskGb" min="${vm.diskGb}" max="65536" value="${vm.diskGb}" required></label><p id="resize-error" class="form-error" role="alert"></p><button class="btn primary" id="resize-submit">Apply</button></form></div>`;
+    return;
+  }
   const { usage } = state.account;
   const limits = vm.resizeLimits ?? state.account.limits;
   const gb = (mb) => `${+(mb / 1024).toFixed(1)} GB`;
@@ -1494,6 +1502,12 @@ async function submitResize(form) {
   const err = $('#resize-error');
   err.textContent = '';
   if (!form.reportValidity()) return;
+  if (form.sizeId) {
+    const button=$('#resize-submit'); button.disabled=true;
+    try { await api(`/api/vms/${state.detail.vmid}/resize`,{method:'POST',body:{sizeId:form.sizeId.value,diskGb:Number(form.diskGb.value)}}); toast('Changing the reserved size.'); await loadList(); select(state.detail.vmid); }
+    catch(ex) {err.textContent=ex.message;button.disabled=false;}
+    return;
+  }
   const cur = state.resizeFrom;
   const body = {};
   const cores = Number(form.cores.value);

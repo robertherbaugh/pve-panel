@@ -17,7 +17,7 @@ export function customerOfferings(customerId) {
     backupStorageIncluded: false, backupClassId: 'basic', billingMode: 'reservation',
   };
 }
-export function resolveOffering(customerId, spec) {
+export function resolveOffering(customerId, spec, excludeVmid = null) {
   const p = computeProfile(customerId), c = computeCatalog();
   if (!p.catalogEnabled) {
     if (spec.sizeId || spec.storageClassId || spec.haEnabled) fail('Catalog provisioning is not enabled for this customer', 403);
@@ -32,7 +32,7 @@ export function resolveOffering(customerId, spec) {
   if ((spec.cores !== undefined && spec.cores !== size.cores) || (spec.memoryMb !== undefined && spec.memoryMb !== size.memoryMb)) fail('CPU and memory must match the selected VM size', 400);
   if (spec.diskGb < size.minDiskGb) fail(`This VM size needs at least ${size.minDiskGb} GiB of disk`, 400);
   if (spec.haEnabled) fail('HA activation is not available yet', 400);
-  const used = db.prepare('SELECT spec FROM vms WHERE customer_id=?').all(customerId).reduce((total, r) => {
+  const used = db.prepare('SELECT spec FROM vms WHERE customer_id=? AND vmid!=?').all(customerId, excludeVmid ?? -1).reduce((total, r) => {
     const s = JSON.parse(r.spec ?? '{}'); return total + (s.offering?.storageClassId === cls.id ? s.diskGb ?? 0 : 0);
   }, 0);
   if (p.storageLimitsGb[cls.id] > 0 && used + spec.diskGb > p.storageLimitsGb[cls.id]) fail(`This exceeds the customer’s ${cls.name} storage limit`);
@@ -47,25 +47,27 @@ async function requirePrivileges(path, names) {
   const perms = await read('/access/permissions', { path });
   if (names.some((p) => !(perms?.[path]?.[p] === 1 || perms?.[path]?.[p] === true))) fail(`The provider token needs ${names.join(', ')} on ${path}`);
 }
-export async function selectPlacement({ offering, template, sourceConfig, pool, grant }) {
+export async function selectPlacement({ offering, template, sourceConfig, pool, grant, existing = null }) {
   const catalog = computeCatalog(), inventory = await computeInventory(), guests = await clusterGuests(true);
   if (inventory.errors.length) fail('Node inventory is unavailable. The provider must check the cluster connection and audit permissions.');
   // Global read access is required to count other tenants' stopped reservations.
   await requirePrivileges('/vms', ['VM.Audit']);
-  await requirePrivileges(`/vms/${template.vmid}`, ['VM.Clone']);
+  if (!existing || existing.clone) await requirePrivileges(`/vms/${template.vmid}`, ['VM.Clone']);
   await requirePrivileges(`/pool/${pool}`, ['Pool.Audit', 'VM.Allocate', 'VM.Audit', 'VM.Config.CPU', 'VM.Config.Memory', 'VM.Config.Disk', 'VM.Config.Network', 'VM.Config.Cloudinit', 'VM.Config.Options', 'VM.PowerMgmt']);
   let haStatus;
   try { haStatus = await read('/cluster/ha/status/current'); }
   catch { fail('Cluster maintenance state cannot be verified with the current token.'); }
   if (!Array.isArray(haStatus)) fail('Cluster maintenance inventory is unavailable.');
   const maintenance = new Set(haStatus.filter((s) => s.type === 'lrm' && /maintenance|lost|unavailable/i.test(s.status ?? '')).map((s) => s.node));
-  const preview = previewCompute({ sizeId: offering.sizeId, storageClassId: offering.storageClassId, diskGb: offering.diskGb }, inventory, catalog);
+  const previewInventory = existing ? { ...inventory, nodes: inventory.nodes.map(n => ({ ...n, storages: n.storages.map(s => n.node === existing.node && s.storage === existing.storage && s.availableBytes != null ? { ...s, availableBytes: s.availableBytes + existing.diskGb * 2**30 } : s) })) } : inventory;
+  const preview = previewCompute({ sizeId: offering.sizeId, storageClassId: offering.storageClassId, diskGb: offering.diskGb }, previewInventory, catalog);
   const sourceDisks = Object.entries(sourceConfig).filter(([key, value]) => /^(?:(?:scsi|sata|virtio|ide)\d+|efidisk0|tpmstate0)$/.test(key) && !String(value).includes('media=cdrom') && !String(value).startsWith('none')).map(([, v]) => String(v).split(':')[0]);
   // The clone target option requires shared source volumes, including cloud-init.
   if (sourceConfig.ide2 && String(sourceConfig.ide2).includes('cloudinit')) sourceDisks.push(String(sourceConfig.ide2).split(':')[0]);
   const sourceNode = inventory.nodes.find((n) => n.node === template.node);
-  const holds = heldReservations(), reasons = [], candidates = [], allocations = new Map();
+  const holds = heldReservations().filter(h => h.vmid !== existing?.vmid), reasons = [], candidates = [], allocations = new Map();
   for (const candidate of preview.candidates) {
+    if (existing && (candidate.node !== existing.node || candidate.storage !== existing.storage)) continue;
     const errors = [...candidate.reasons], node = inventory.nodes.find((n) => n.node === candidate.node), storage = node?.storages.find((s) => s.storage === candidate.storage);
     if (maintenance.has(candidate.node)) errors.push('Node is in maintenance or unavailable to HA.');
     if (grant && !grant.clone.storages.includes(candidate.storage)) errors.push('Storage is outside the clone permission set.');
@@ -89,7 +91,7 @@ export async function selectPlacement({ offering, template, sourceConfig, pool, 
     }
     if (!allocations.has(candidate.node)) {
       const used = { memoryMb: 0, cores: 0 }; let unknown = false;
-      for (const g of guests.values()) if (!g.template && g.node === candidate.node) {
+      for (const g of guests.values()) if (!g.template && g.node === candidate.node && g.vmid !== existing?.vmid) {
         try {
           const cfg = await read(`${guestPath(g)}/config`);
           const memory = Number(cfg.memory), cores = Number(cfg.cores) * Number(cfg.sockets ?? 1);
@@ -110,7 +112,7 @@ export async function selectPlacement({ offering, template, sourceConfig, pool, 
     if (node?.cores != null && used.cores + offering.cores > node.cores) errors.push('Allocated vCPUs leave insufficient reservation capacity.');
     const storageKey = storage?.shared ? `shared/${candidate.storage}` : `${candidate.node}/${candidate.storage}`;
     const diskHolds = holds.filter((h) => h.storage_key === storageKey && (h.state === 'held' || !guests.has(h.vmid))).reduce((n, h) => n + h.disk_gb, 0);
-    if (storage?.availableBytes != null && offering.diskGb + diskHolds + backupDiskHoldsGb(storageKey) + catalog.reserves.diskGb > storage.availableBytes / 2 ** 30) errors.push('Pending disk reservations leave insufficient free capacity.');
+    if (storage?.availableBytes != null && (offering.diskGb - (existing?.diskGb ?? 0)) + diskHolds + backupDiskHoldsGb(storageKey) + catalog.reserves.diskGb > storage.availableBytes / 2 ** 30) errors.push('Pending disk reservations leave insufficient free capacity.');
     if (!errors.length) {
       try {
         await requirePrivileges(`/storage/${candidate.storage}`, ['Datastore.AllocateSpace', 'Datastore.Audit']);

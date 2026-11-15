@@ -336,7 +336,7 @@ export async function startMockPve({ port = 0 } = {}) {
         return send(res, vm.status !== 'running' ? null : [{ name: 'lo', inet: '127.0.0.1/8' }, { name: 'eth0', hwaddr: /hwaddr=([^,]+)/.exec(vm.cfg.net0)?.[1], inet: `${n ? `10.100.${n}` : '192.168.1'}.123/24` }]);
       }
       if (rest === '/resize' && req.method === 'PUT') { const b = await body(req); log('CT RESIZE', vmid, JSON.stringify(b));
-        vm.cfg.rootfs = vm.cfg.rootfs.replace(/size=[^,]+/, `size=${b.size}`); vm.maxdisk = parseInt(b.size) * 2 ** 30; return send(res, task('resize', vmid, 500)); }
+        vm.cfg.rootfs = vm.cfg.rootfs.replace(/size=[^,]+/, `size=${b.size}`); vm.maxdisk = parseInt(b.size) * 2 ** 30; return send(res, task('resize', vmid, cluster.resizeDelay ?? 500)); }
       if (rest === '/config' && req.method === 'PUT') { const b = await body(req);
         if ('sockets' in b) return send(res, null, 400, 'property is not defined in schema and the schema does not allow additional properties: sockets');
         Object.assign(vm.cfg, b); if (b.cores) vm.maxcpu = Number(b.cores); if (b.memory) vm.maxmem = Number(b.memory) * 2 ** 20; log('CT CONFIG', vmid, JSON.stringify(b)); return send(res, null); }
@@ -375,7 +375,7 @@ export async function startMockPve({ port = 0 } = {}) {
       return send(res, Object.keys(vm.cfg).map((k) => ({ key: k, value: vm.pending?.[k] !== undefined ? undefined : vm.cfg[k], ...(vm.pending?.[k] !== undefined ? { value: String(k === 'cores' ? vm.maxcpu : Math.round(vm.maxmem / 2**20)), pending: vm.pending[k] } : {}) })));
     }
     if (rest === '/resize' && req.method === 'PUT') { const b = await body(req); log('RESIZE', vmid, JSON.stringify(b));
-      vm.cfg[b.disk] = vm.cfg[b.disk].replace(/size=[^,]+/, `size=${b.size}`); vm.maxdisk = parseInt(b.size)*2**30; return send(res, task('resize', vmid, 500)); }
+      vm.cfg[b.disk] = vm.cfg[b.disk].replace(/size=[^,]+/, `size=${b.size}`); vm.maxdisk = parseInt(b.size)*2**30; return send(res, task('resize', vmid, cluster.resizeDelay ?? 500)); }
     const pw = rest.match(/^\/status\/(start|stop|shutdown|reboot)$/);
     if (pw) { const a = pw[1]; log('POWER', vmid, a); return send(res, task(`qm${a}`, vmid, 800, () => {
       vm.status = (a==='start'||a==='reboot')?'running':'stopped'; if (a==='start'||a==='reboot') started.set(vmid, Date.now());

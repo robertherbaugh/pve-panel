@@ -1,5 +1,5 @@
 import { backupUsage } from '../compute-backups.js';
-import { computeManaged, assertComputeIdle } from '../compute-state.js';
+import { computeManaged, assertComputeIdle, allocationFor } from '../compute-state.js';
 import { Readable } from 'node:stream';
 import { db, audit } from '../db.js';
 import { config } from '../config.js';
@@ -326,6 +326,7 @@ export default async function vmRoutes(app) {
           memoryMb: { type: 'integer', minimum: 512, maximum: 1024 * 1024 },
           diskGb: { type: 'integer', minimum: 1, maximum: 64 * 1024 },
           restart: { type: 'boolean' },
+          sizeId: {type:'string',maxLength:64},
         },
       },
     },
@@ -492,6 +493,7 @@ export default async function vmRoutes(app) {
     return {
       ...summarize(row, { ...guest, ...status, maxcpu: status.cpus ?? guest.maxcpu }),
       permissions,
+      offering: allocationFor(row.vmid)?.offering ?? null,
       resizeLimits: row.access_managed && permissions.includes('resize')
         ? cloneRules(req).find((r) => r.id === JSON.parse(row.spec ?? '{}').accessRuleId)?.clone.limits ?? null : null,
       deletable: !!row.created_by_customer && permissions.includes('delete'),
@@ -507,7 +509,7 @@ export default async function vmRoutes(app) {
       ipconfig: cfg.ipconfig0 ?? cfg.net0 ?? null,
       ips,
       pendingSize,
-      resizable: !!row.created_by_customer && !computeManaged(row.vmid) && permissions.includes('resize'),
+      resizable: !!row.created_by_customer && permissions.includes('resize'),
       netin: status.netin ?? 0,
       netout: status.netout ?? 0,
     };

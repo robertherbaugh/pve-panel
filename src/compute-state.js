@@ -58,7 +58,7 @@ export function beginOperation({ customerId, userId, vmid, kind = 'create', key 
     db.prepare(`INSERT INTO compute_operations(id,customer_id,user_id,vmid,kind,state,request_key,request_hash,plan,credentials)
       VALUES(?,?,?,?,?,'reserved',?,?,?,?)`).run(id, customerId, userId, vmid, kind, key, hash, JSON.stringify(plan), credentials ? seal(`compute:${id}`, JSON.stringify(credentials)) : null);
     db.prepare(`INSERT INTO compute_reservations(operation_id,vmid,node,storage,storage_key,cores,memory_mb,disk_gb,state)
-      VALUES(?,?,?,?,?,?,?,?,'held')`).run(id, vmid, plan.node, plan.storage, plan.storageKey, plan.cores, plan.memoryMb, plan.diskGb);
+      VALUES(?,?,?,?,?,?,?,?,'held')`).run(id, vmid, plan.node, plan.storage, plan.storageKey, plan.cores, plan.memoryMb, plan.reserveDiskGb ?? plan.diskGb);
     if (plan.staging) db.prepare('INSERT INTO compute_staging_reservations(operation_id,vmid,node,storage,storage_key,disk_gb) VALUES(?,?,?,?,?,?)')
       .run(id, vmid, plan.sourceNode, plan.staging.storage, plan.staging.storageKey, plan.staging.diskGb);
     onReserve(id);
@@ -98,7 +98,7 @@ export function recordAllocation(vmid, customerId, offering, kind = 'created') {
   const now = new Date().toISOString(), value = JSON.stringify(offering);
   const old = allocationFor(vmid);
   if (old && old.customer_id !== customerId) fail('Allocation ownership must be reconciled before changing it');
-  if (old && JSON.stringify(old.offering) === value) return old;
+  if (old && JSON.stringify(old.offering) === value && kind === 'created') return old;
   const id = old?.id ?? randomUUID();
   if (old) db.prepare('UPDATE compute_allocations SET offering=? WHERE id=?').run(value, id);
   else db.prepare('INSERT INTO compute_allocations(id,vmid,customer_id,offering,started_at) VALUES(?,?,?,?,?)').run(id, vmid, customerId, value, now);
@@ -108,10 +108,13 @@ export function recordAllocation(vmid, customerId, offering, kind = 'created') {
 export function completeOperation(id, onComplete = () => {}) {
   const op = operationById(id);
   if (!op) fail('Compute operation not found', 404);
+  if (op.state === 'complete') return;
   db.exec('BEGIN IMMEDIATE');
   try {
     recordAllocation(op.vmid, op.customer_id, op.plan.offering, op.kind === 'create' ? 'created' : op.kind);
     onComplete();
+    db.prepare("UPDATE compute_reservations SET state='released' WHERE vmid=? AND operation_id!=? AND state='committed'").run(op.vmid, id);
+    db.prepare('UPDATE compute_reservations SET cores=?,memory_mb=?,disk_gb=? WHERE operation_id=?').run(op.plan.offering.cores,op.plan.offering.memoryMb,op.plan.offering.diskGb,id);
     db.prepare("UPDATE compute_reservations SET state='committed' WHERE operation_id=?").run(id);
     db.prepare("UPDATE compute_operations SET state='complete',credentials=NULL,error=NULL,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").run(id);
     db.exec('COMMIT');

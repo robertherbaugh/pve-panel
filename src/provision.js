@@ -1,8 +1,9 @@
+import { runCatalogResize } from './compute-lifecycle.js';
 import { resolveSshKeys } from './ssh-keys.js';
 import { db, audit } from './db.js';
 import { config } from './config.js';
 import { resolveOffering, selectPlacement, checkOfferingRevision, verifyComputeDeleted } from './compute-placement.js';
-import { beginOperation, priorRequest, requestHash, updateOperation, completeOperation, operationById, operationCredentials, pendingOperations, releaseCompute, assertComputeIdle, computeManaged, operationStep, setOperationStep, releaseStaging } from './compute-state.js';
+import { beginOperation, priorRequest, requestHash, updateOperation, completeOperation, operationById, operationCredentials, pendingOperations, releaseCompute, assertComputeIdle, computeManaged, operationStep, setOperationStep, releaseStaging, allocationFor } from './compute-state.js';
 import { capacityLocks,capacityBusy } from './capacity.js';
 import { customerById, requireCustomer } from './tenancy.js';
 import {
@@ -625,8 +626,11 @@ else { 'nothing' }
  * within the plan. CPU/memory on a running server take effect at the next
  * restart by Proxmox (optionally right away); disks only grow.
  */
-export async function resizeServer(req, row, { cores, memoryMb, diskGb, restart = false }) {
-  if (computeManaged(row.vmid)) throw new ProvisionError(409, 'Choose a catalog size when resizing. Catalog resize is not available yet.');
+export async function resizeServer(req, row, input) {
+  const { cores, memoryMb, diskGb, restart = false } = input;
+  assertComputeIdle(row.vmid);
+  const allocation = allocationFor(row.vmid);
+  if (!allocation && input.sizeId) throw new ProvisionError(400,'This VM does not use catalog sizes');
   const customer=requireCustomer(req);
   const account=lifecycleAccount(req,row,customer);
   const capacityKey=`customer:${customer.id}`;
@@ -651,7 +655,9 @@ export async function resizeServer(req, row, { cores, memoryMb, diskGb, restart 
       memoryMb: Number(cfg.memory) || 512,
       diskGb: disk ? Math.ceil(diskSizeGb(cfg[disk])) : 0,
     };
-    const next = { cores: cores ?? cur.cores, memoryMb: memoryMb ?? cur.memoryMb, diskGb: diskGb ?? cur.diskGb };
+    const oldSpec = JSON.parse(row.spec ?? '{}');
+    const offering = allocation ? resolveOffering(customer.id, { ...input, templateId:oldSpec.template, storageClassId:allocation.offering.storageClassId, diskGb:diskGb ?? cur.diskGb },row.vmid) : null;
+    const next = offering ? { cores:offering.cores,memoryMb:offering.memoryMb,diskGb:offering.diskGb } : { cores: cores ?? cur.cores, memoryMb: memoryMb ?? cur.memoryMb, diskGb: diskGb ?? cur.diskGb };
 
     if (next.diskGb < cur.diskGb) throw new ProvisionError(400, `Disks can only grow; this one has ${cur.diskGb} GB`);
     if (next.diskGb > cur.diskGb && !disk) throw new ProvisionError(400, "This server's disk can't be resized here");
@@ -675,6 +681,21 @@ export async function resizeServer(req, row, { cores, memoryMb, diskGb, restart 
     if (others.diskGb + next.diskGb > limits.diskGb) over.push(`disk (at most ${limits.diskGb - others.diskGb} GB for this server)`);
     if (over.length) throw new ProvisionError(409, `This exceeds your plan: ${over.join(', ')}`);
 
+    if (allocation) {
+      if (guest.status !== 'stopped' || cfg.lock || guest.lock) throw new ProvisionError(409,'Stop the VM and wait for its tasks before changing its catalog size');
+      if (allocation.offering.haEnabled) throw new ProvisionError(409,'Disable HA before changing this VM size');
+      const pool=oldSpec.pool ?? config.pve.pool, storage=String(cfg[disk]).split(':')[0];
+      if (!(await poolMembers(pool)).has(row.vmid) || customer.pools.length && !customer.pools.includes(pool)) throw new ProvisionError(403,'The VM is outside the customer pool');
+      const op=await serial(async()=>{
+        const placement=await selectPlacement({offering,template:guest,sourceConfig:cfg,pool,existing:{vmid:row.vmid,node:guest.node,storage,diskGb:cur.diskGb}});
+        checkOfferingRevision(customer.id,offering);
+        return beginOperation({customerId:customer.id,userId:req.account.id,vmid:row.vmid,kind:'resized',plan:{...placement,reserveDiskGb:next.diskGb-cur.diskGb,cores:Math.max(cur.cores,next.cores),memoryMb:Math.max(cur.memoryMb,next.memoryMb)},onReserve:id=>{
+          db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Changing size',spec=? WHERE vmid=?").run(JSON.stringify({...oldSpec,cores:Math.max(cur.cores,next.cores),memoryMb:Math.max(cur.memoryMb,next.memoryMb),diskGb:next.diskGb,operationId:id}),row.vmid);
+        }});
+      });
+      runCatalogResize(op.id);
+      return { operationId:op.id,accepted:true,before:cur,after:next,pendingRestart:false };
+    }
     const running = guest.status === 'running';
     const container = guest.type === 'lxc'; // containers take new CPU/memory limits right away
     if (cpuMemChanged) {
@@ -780,6 +801,7 @@ export async function deleteServer(req, row) {
 // Recovery follows accepted clone tasks. It never resubmits an ambiguous clone.
 export function startComputeRecovery(log) {
   for (const op of pendingOperations()) {
+    if (op.kind === 'resized') { runCatalogResize(op.id); continue; }
     if (op.kind !== 'create') { updateOperation(op.id, 'review', { error: 'Interrupted operation needs reconciliation' }); continue; }
     if (!op.upid || !op.task_node) {
       updateOperation(op.id, 'review', { error: 'Interrupted before the task response was recorded. Reconcile before retrying.' });
@@ -798,6 +820,11 @@ export function startComputeRecovery(log) {
 // Resume only an existing, identifiable VM. Never retry a clone POST.
 export async function reconcileComputeOperation(req, id, action) {
   const op = operationById(id);
+  if (op?.state === 'review' && op.kind === 'resized' && action === 'resume') {
+    updateOperation(id,'configuring');
+    runCatalogResize(id);
+    return {accepted:true};
+  }
   if (!op || op.state !== 'review' || op.kind !== 'create') throw new ProvisionError(409, 'This operation is not awaiting create reconciliation');
   const row = db.prepare('SELECT * FROM vms WHERE vmid=? AND customer_id=?').get(op.vmid, op.customer_id);
   if (!row || JSON.parse(row.spec ?? '{}').operationId !== id) throw new ProvisionError(409, 'VM ownership needs manual reconciliation');

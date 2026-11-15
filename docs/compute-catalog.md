@@ -52,7 +52,10 @@ Release requires a recorded terminal task and checked VM absence.
 Unknown submissions cannot be released automatically.
 
 Unresolved operations block customer mutations and provider reassignment.
-Catalog resize, reinstall and full restore remain blocked until their integration preserves the offering.
+Catalog resize preserves the datastore and storage class. The VM must be stopped.
+The customer selects an enabled size and can grow the disk.
+Resize records durable steps and replaces the previous capacity reservation after verification.
+Catalog reinstall and full restore need separate integration.
 Existing creation and lifecycle operations continue for customers without catalog opt-in.
 Do not enable catalog provisioning broadly before the pilot passes on the target infrastructure.
 
