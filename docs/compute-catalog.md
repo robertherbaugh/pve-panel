@@ -176,6 +176,7 @@ A durable reservation enforces the customer's shared backup quota before the dum
 The quota uses logical VM disk capacity, including retained archives after VM deletion.
 The ledger records archive bytes separately. They do not represent physical PBS consumption.
 The panel releases the reservation after it checks archive deletion.
+Active compute allocations and retained backup reservations block customer deletion, even after VM rows disappear.
 Unknown outcomes retain their quota.
 Providers can discover a completed archive by its job marker under **Compute operations**.
 An unresolved submission without a matching archive needs manual provider investigation.

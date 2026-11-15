@@ -78,7 +78,11 @@ test('retained backup reservations survive VM deletion and panel restart',async(
  const r=await admin.del('/api/admin/vms/101/server');
  assert.equal(r.status,202,r.text);
  await waitFor(()=>!stack.mock.vms.has(vmid));
+ await waitFor(()=>!sql.prepare('SELECT 1 FROM vms WHERE vmid=?').get(vmid));
  await stack.restartPanel();
+ const plan=(await admin.get(`/api/admin/customers/${id}/deletion`)).json;
+ assert.ok(plan.blockers.some(b=>b.label==='Reserved backup storage'));
+ assert.equal((await admin.req('DELETE',`/api/admin/customers/${id}`,{revision:plan.revision})).status,409);
  assert.equal((await user.get('/api/compute-backup-usage')).json.reservedBytes,40*2**30);
  assert.ok(stack.mock.backups.has(first.volid));
 });

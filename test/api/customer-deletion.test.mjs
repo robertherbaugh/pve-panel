@@ -195,3 +195,16 @@ test('deleted personal customers stay deleted after sign-in and an idempotent mi
   assert.equal(sql.prepare('SELECT count(*) n FROM customers WHERE legacy_user_id=?').get(personalUser.userId).n, 1);
   assert.deepEqual(sql.prepare('PRAGMA foreign_key_check').all(), []);
 });
+
+
+test('durable compute and backup reservations block customer deletion after VM rows disappear', async () => {
+  const c = await create('compute-ownership');
+  sql.prepare("INSERT INTO compute_operations(id,customer_id,user_id,vmid,kind,state,plan) VALUES('deletion-op',?,?,850,'create','review','{}')").run(c.id,user.id);
+  sql.prepare("INSERT INTO compute_allocations(id,vmid,customer_id,offering,started_at) VALUES('deletion-allocation',850,?,'{}',datetime('now'))").run(c.id);
+  sql.prepare("INSERT INTO compute_backup_reservations(job_id,customer_id,vmid,node,storage,storage_key,reserved_bytes,state) VALUES(9901,?,850,'pve1','pbs','shared/pbs',1073741824,'retained')").run(c.id);
+  const plan=(await admin.get(`/api/admin/customers/${c.id}/deletion`)).json;
+  assert.deepEqual(plan.blockers.map(b=>b.label),['Compute operations','Compute allocations','Reserved backup storage']);
+  assert.equal((await remove(c)).status,409);
+  sql.exec("UPDATE compute_operations SET state='cancelled' WHERE id='deletion-op'; UPDATE compute_allocations SET ended_at=datetime('now') WHERE id='deletion-allocation'; UPDATE compute_backup_reservations SET state='released' WHERE job_id=9901");
+  assert.equal((await remove(c)).status,204);
+});
