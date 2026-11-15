@@ -1,3 +1,7 @@
+import {renderRetainedBackups} from './retained-backups.js';
+import { configureHa } from './compute-ha.js';
+import { renderComputeServices } from './compute-services.js';
+import { renderSshKeys } from './ssh-keys.js';
 import {
   $, esc, api, toast, fail, confirmAction, promptText, generatePassword,
   bytes, pct, duration, SignedOut, setUnauthorizedHandler,
@@ -405,6 +409,7 @@ function renderOverview(body) {
       <div><dt>${specIcon('disk')}Disk</dt><dd>${bytes(vm.maxdisk)}</dd></div>
       <div class="wide"><dt>${specIcon('globe')}IP addresses</dt><dd>${ips}</dd></div>
     </dl>
+    ${vm.offering?`<section class="security-card"><h2>HA Enabled: ${vm.offering.haEnabled?'Yes':'No'}</h2><p class="muted">Optional host failover recovery.</p>${state.account.customer?.role==='admin'&&can('power')?`<button class="btn" data-ha>${vm.offering.haEnabled?'Disable HA add-on…':'Enable HA add-on…'}</button>`:''}</section>`:''}
     ${vm.pendingSize ? `
       <div class="notice warn size-pending">
         <p><strong>Size change waiting for a restart:</strong> ${esc(vm.pendingSize.cores)} ${vm.pendingSize.cores === 1 ? 'core' : 'cores'},
@@ -563,7 +568,7 @@ async function renderRemote(body) {
   let ts;
   try { ts = await api(`/api/vms/${vmid}/tailscale`); } catch (err) { body.innerHTML = ''; return fail(err); }
   if (vmid !== state.selected || state.tab !== 'remote' || state.view !== 'server') return;
-  const vm = state.detail;
+  const vm = state.detail,headscale=ts.provider==='headscale',provider=headscale?'Headscale':'Tailscale';
 
   if (ts.state === 'installing' || ts.state === 'disconnecting') {
     body.innerHTML = `
@@ -616,8 +621,8 @@ async function renderRemote(body) {
   const defaultName = (vm.name || `server-${vm.vmid}`).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63);
   body.innerHTML = `
     <div class="ts">
-      <h2 class="h2">Connect with Tailscale</h2>
-      <p class="muted ts-lede">Use your own Tailscale account to reach ${esc(vm.name)} from your laptop or phone.
+      <h2 class="h2">Connect with ${provider}</h2>
+      <p class="muted ts-lede">${headscale?`Connect to ${esc(ts.loginServer)} with a Headscale pre-authentication key to reach ${esc(vm.name)}.`:`Use your own Tailscale account to reach ${esc(vm.name)} from your laptop or phone.`}
         This works in addition to the VPN of your provider.</p>
       ${ts.state === 'failed' && ts.error ? `<p class="error-box">${esc(ts.error)}</p>` : ''}
       ${blocked ? `<div class="notice warn"><p>${esc(blocked)}</p></div>` : ''}
@@ -637,8 +642,8 @@ async function renderRemote(body) {
           </label>
         </div>
         <label>Auth key
-          <input name="authKey" type="password" required autocomplete="off" spellcheck="false" placeholder="tskey-auth-…">
-          <span class="hint">Create one in your Tailscale admin console under Settings, Keys. Don't use an
+          <input name="authKey" type="password" required autocomplete="off" spellcheck="false" placeholder="${headscale?'Headscale pre-authentication key':'tskey-auth-…'}">
+          <span class="hint">${headscale?'Use a key scoped to your customer in Headscale.':'Create one in your Tailscale admin console under Settings, Keys.'} Don't use an
             ephemeral key: the server would disappear from your tailnet whenever it's offline.</span>
         </label>
         <label>Name in your tailnet
@@ -646,7 +651,7 @@ async function renderRemote(body) {
         </label>
         <p id="ts-error" class="form-error" role="alert"></p>
         <div class="row">
-          <button class="btn primary" ${blocked ? 'disabled' : ''}>${icon('link')}<span>Connect to Tailscale</span></button>
+          <button class="btn primary" ${blocked ? 'disabled' : ''}>${icon('link')}<span>Connect to ${provider}</span></button>
         </div>
       </form>
     </div>`;
@@ -811,7 +816,8 @@ async function openCreate() {
   renderList();
   $('#detail').innerHTML = '<div class="detail-inner"><p class="muted">Loading…</p></div>';
   try {
-    const [account, templates] = await Promise.all([api('/api/account'), api('/api/templates')]);
+    const [account, templates, saved] = await Promise.all([api('/api/account'), api('/api/templates'), api('/api/ssh-keys')]);
+    state.sshKeys = saved.keys;
     state.account = account;
     state.allTemplates = templates;
     state.createDestination = account.personalCreation ? '' : account.cloneDestinations?.[0]?.id ?? '';
@@ -822,14 +828,17 @@ async function openCreate() {
 
 function renderCreate() {
   const destinations = state.account.cloneDestinations ?? [];
+  const catalog = state.account.offerings?.enabled ? state.account.offerings : null;
   const destination = destinations.find((d) => d.id === state.createDestination);
-  state.templates = (state.allTemplates ?? state.templates).filter((t) => !destination || destination.templates.includes(t.id));
+  state.templates = (state.allTemplates ?? state.templates).filter((t) => (!destination || destination.templates.includes(t.id)) && (!catalog || typeof t.id === 'number'));
   const left = remaining();
   const limits = creationLimits();
   const gb = (mb) => `${+(mb / 1024).toFixed(1)} GB`;
   const minDisk = Math.min(...state.templates.map((t) => t.minDiskGb));
 
+  const sizes = catalog?.sizes.filter(s => s.cores <= left.cores && s.memoryMb <= left.memoryMb && s.minDiskGb <= left.diskGb) ?? [];
   const blockers = [];
+  if (catalog && (!sizes.length || !catalog.classes.length)) blockers.push('no catalog offerings fit your remaining quota');
   if (left.servers < 1) blockers.push(`you already have ${limits.servers} of ${limits.servers} servers`);
   if (left.cores < 1) blockers.push('all CPU cores in your plan are in use');
   if (left.memoryMb < 512) blockers.push('less than 0.5 GB memory is left in your plan');
@@ -889,7 +898,7 @@ function renderCreate() {
         <fieldset>
           <legend>Size</legend>
           <div class="grid-3">
-            <label>CPU cores
+            ${catalog ? `<label>VM size<select name="sizeId">${sizes.map(s => `<option value="${esc(s.id)}">${esc(s.name)} · ${s.cores} vCPU · ${gb(s.memoryMb)}</option>`).join('')}</select></label><label>Storage class<select name="storageClassId">${catalog.classes.map(c => `<option value="${c.id}" ${c.id === 'standard' ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>` : `            <label>CPU cores
               <input name="cores" type="number" min="1" max="${left.cores}" value="${Math.min(2, left.cores)}" required>
             </label>
             <label>Memory
@@ -897,6 +906,7 @@ function renderCreate() {
                 ${memOptions.map((m) => `<option value="${m}" ${m === defaultMem ? 'selected' : ''}>${gb(m)}</option>`).join('')}
               </select>
             </label>
+`}
             <label>Disk (GB)
               <input name="diskGb" type="number" min="${first.minDiskGb}" max="${left.diskGb}"
                      value="${Math.min(Math.max(first.minDiskGb, 20), left.diskGb)}" required>
@@ -921,7 +931,10 @@ function renderCreate() {
               <span class="mono" id="windows-user"></span>
             </div>
           </div>
-          <label>Password
+          <label data-os="cloudinit container">Sign-in method
+            <select name="loginMethod"><option value="ssh" ${state.sshKeys?.length ? 'selected' : ''}>SSH keys</option><option value="password" ${state.sshKeys?.length ? '' : 'selected'}>Username and password</option><option value="both">SSH keys and password</option></select>
+          </label>
+          <label data-password-field>Password
             <span class="with-button">
               <input name="password" type="password" minlength="12" maxlength="200" autocomplete="new-password">
               <button type="button" class="btn" data-generate>Generate</button>
@@ -929,10 +942,12 @@ function renderCreate() {
             <span class="hint" data-os="cloudinit container">At least 12 characters. Leave empty if you only want to sign in with an SSH key.</span>
             <span class="hint" data-os="windows">At least 12 characters with three of: lowercase, uppercase, numbers, symbols.</span>
           </label>
-          <label data-os="cloudinit container">SSH public keys
+          <div data-os="cloudinit container" data-key-fields>
+          ${state.sshKeys?.length ? `<fieldset><legend>Saved SSH keys</legend>${state.sshKeys.map(k=>`<label class="check"><input type="checkbox" name="sshKeyIds" value="${k.id}" checked><span>${esc(k.name)} <span class="mono small muted">${esc(k.fingerprint)}</span></span></label>`).join('')}</fieldset>` : '<p class="hint">You can save reusable public keys under Account.</p>'}
+          <label>SSH public keys
             <textarea name="sshKeys" rows="3" spellcheck="false" placeholder="ssh-ed25519 AAAA… you@laptop"></textarea>
-            <span class="hint">Optional. One key per line.</span>
-          </label>
+            <span class="hint">One public key per line. Your private keys stay on your device.</span>
+          </label></div>
         </fieldset>
 
         <p id="create-error" class="form-error" role="alert"></p>
@@ -942,12 +957,41 @@ function renderCreate() {
         </div>
       </form>
     </div>`;
-  applyTemplateMode($('#create-form'), first);
+  const createForm = $('#create-form');
+  applyTemplateMode(createForm, first);
+  if (catalog) {
+    const applySize = () => {
+      const size = sizes.find(s => s.id === createForm.sizeId.value);
+      const image = findTemplate(createForm.templateId.value);
+      createForm.diskGb.min = Math.max(size.minDiskGb, image.minDiskGb);
+      if (Number(createForm.diskGb.value) < Number(createForm.diskGb.min)) createForm.diskGb.value = createForm.diskGb.min;
+    };
+    createForm.addEventListener('change', applySize); applySize();
+    createForm.querySelector('#create-error').insertAdjacentHTML('beforebegin', '<p class="hint">Placement is automatic. Your allocated VM and storage remain billable while the VM is stopped.</p>');
+  }
 }
 
 const findTemplate = (value) => state.templates.find((t) => String(t.id) === String(value));
 
 /** Shows the fields that apply to the chosen image: cloud-init, Windows or container. */
+function applyAuthentication(form, tpl) {
+  if (!form.loginMethod) return;
+  const windows = tpl.setup === 'windows', method = form.loginMethod.value;
+  const password = windows || method !== 'ssh', keys = !windows && method !== 'password';
+  form.querySelector('[data-password-field]').hidden = !password;
+  form.password.disabled = !password;form.password.required = password;
+  const keyFields = form.querySelector('[data-key-fields]');
+  keyFields.hidden = !keys;
+  keyFields.querySelectorAll('input,textarea').forEach(f => {f.disabled = !keys;});
+  form.sshKeys.required = keys && !form.querySelector('[name=sshKeyIds]:checked');
+  if (!form.dataset.authBound) {
+    form.dataset.authBound='1';
+    form.addEventListener('change', e=>{
+      if (['loginMethod','sshKeyIds'].includes(e.target.name)) applyAuthentication(form, findTemplate(form.templateId.value));
+    });
+  }
+}
+
 function applyTemplateMode(form, tpl) {
   const mode = tpl.setup;                 // cloudinit | windows | container
   const windows = mode === 'windows';
@@ -967,6 +1011,7 @@ function applyTemplateMode(form, tpl) {
       : 'Lowercase letters, numbers and hyphens.';
   }
   form.querySelector('#windows-user').textContent = mode === 'cloudinit' ? '' : tpl.defaultUser;
+  applyAuthentication(form, tpl);
 }
 
 function onTemplateChange(form) {
@@ -1125,8 +1170,10 @@ async function renderBackups(body) {
           <h2>Backups</h2>
           <p class="muted small">A backup is a full copy of the server, kept outside it. ${b.used} of ${b.max} backups made by you are in use.</p>
         </div>
-        <button class="btn primary" data-backup-now ${working || !room || !can('backup.create') ? 'disabled' : ''}>${icon('archive')}<span>Back up now</span></button>
+        <button class="btn primary" data-backup-now ${working || !room || b.canCreate === false || !can('backup.create') ? 'disabled' : ''}>${icon('archive')}<span>Back up now</span></button>
       </div>
+      ${b.canCreate === false ? '<p class="muted">The backup service add-on is not selected. Existing backups remain available.</p>' : ''}
+      ${b.storageUsage?.reservedBytes ? `<p class="muted small">Basic backup storage reservation: ${bytes(b.storageUsage.reservedBytes)}${b.storageUsage.limitGb ? ` of ${b.storageUsage.limitGb} GiB` : ''}. Storage usage is separate from the backup service fee.</p>` : ''}
       ${b.error ? `<div class="notice warn"><p>${esc(b.error)}</p></div>` : ''}
       ${working ? `<div class="notice backup-progress"><p class="progress-step"><span class="spinner" aria-hidden="true"></span>
           ${esc(j.action === 'restore' ? `Restoring: ${j.step ?? 'starting'}` : (j.step ?? 'Backing up'))}…</p>
@@ -1381,6 +1428,14 @@ async function openResize() {
 }
 
 function renderResize(vm) {
+  if (vm.offering) {
+    const options=state.account.offerings;
+    $('#detail').innerHTML=`<div class="detail-inner"><button class="link-btn" data-back-to-server>Back to server</button><h1>Change size of ${esc(vm.name)}</h1>
+      <p class="muted">Stop the VM before applying a new size. Its storage class and datastore stay the same. Disks can only grow.</p>
+      <form id="resize-form" class="create-form"><label>VM size<select name="sizeId">${options.sizes.map(s=>`<option value="${esc(s.id)}" ${s.id===vm.offering.sizeId?'selected':''}>${esc(s.name)} — ${s.cores} vCPU, ${s.memoryMb/1024} GiB</option>`).join('')}</select></label>
+      <label>Disk (GiB)<input type="number" name="diskGb" min="${vm.diskGb}" max="65536" value="${vm.diskGb}" required></label><p id="resize-error" class="form-error" role="alert"></p><button class="btn primary" id="resize-submit">Apply</button></form></div>`;
+    return;
+  }
   const { usage } = state.account;
   const limits = vm.resizeLimits ?? state.account.limits;
   const gb = (mb) => `${+(mb / 1024).toFixed(1)} GB`;
@@ -1451,6 +1506,12 @@ async function submitResize(form) {
   const err = $('#resize-error');
   err.textContent = '';
   if (!form.reportValidity()) return;
+  if (form.sizeId) {
+    const button=$('#resize-submit'); button.disabled=true;
+    try { await api(`/api/vms/${state.detail.vmid}/resize`,{method:'POST',body:{sizeId:form.sizeId.value,diskGb:Number(form.diskGb.value)}}); toast('Changing the reserved size.'); await loadList(); select(state.detail.vmid); }
+    catch(ex) {err.textContent=ex.message;button.disabled=false;}
+    return;
+  }
   const cur = state.resizeFrom;
   const body = {};
   const cores = Number(form.cores.value);
@@ -1490,7 +1551,8 @@ async function openReinstall() {
   state.view = 'reinstall';
   $('#detail').innerHTML = '<div class="detail-inner"><p class="muted">Loading…</p></div>';
   try {
-    state.templates = await api('/api/templates');
+    const [templates, saved] = await Promise.all([api('/api/templates'), api('/api/ssh-keys')]);
+    state.templates = templates; state.sshKeys = saved.keys;
     if (state.view === 'reinstall') renderReinstall(vm);
   } catch (err) { fail(err); }
 }
@@ -1546,7 +1608,10 @@ function renderReinstall(vm) {
               <span class="mono" id="windows-user"></span>
             </div>
           </div>
-          <label>Password
+          <label data-os="cloudinit container">Sign-in method
+            <select name="loginMethod"><option value="ssh" ${state.sshKeys?.length ? 'selected' : ''}>SSH keys</option><option value="password" ${state.sshKeys?.length ? '' : 'selected'}>Username and password</option><option value="both">SSH keys and password</option></select>
+          </label>
+          <label data-password-field>Password
             <span class="with-button">
               <input name="password" type="password" minlength="12" maxlength="200" autocomplete="new-password">
               <button type="button" class="btn" data-generate>Generate</button>
@@ -1554,10 +1619,12 @@ function renderReinstall(vm) {
             <span class="hint" data-os="cloudinit container">At least 12 characters. Leave empty if you only want to sign in with an SSH key.</span>
             <span class="hint" data-os="windows">At least 12 characters with three of: lowercase, uppercase, numbers, symbols.</span>
           </label>
-          <label data-os="cloudinit container">SSH public keys
+          <div data-os="cloudinit container" data-key-fields>
+          ${state.sshKeys?.length ? `<fieldset><legend>Saved SSH keys</legend>${state.sshKeys.map(k=>`<label class="check"><input type="checkbox" name="sshKeyIds" value="${k.id}" checked><span>${esc(k.name)} <span class="mono small muted">${esc(k.fingerprint)}</span></span></label>`).join('')}</fieldset>` : '<p class="hint">You can save reusable public keys under Account.</p>'}
+          <label>SSH public keys
             <textarea name="sshKeys" rows="3" spellcheck="false" placeholder="ssh-ed25519 AAAA… you@laptop"></textarea>
-            <span class="hint">Optional. One key per line.</span>
-          </label>
+            <span class="hint">One public key per line. Your private keys stay on your device.</span>
+          </label></div>
         </fieldset>
 
         <fieldset>
@@ -1589,10 +1656,13 @@ async function submitReinstall(form) {
   const tpl = findTemplate(form.templateId.value);
   const windows = tpl?.setup === 'windows';
   const body = { templateId: tpl.id };
-  if (form.password.value) body.password = form.password.value;
+  if (!form.password.disabled && form.password.value) body.password = form.password.value;
   if (!windows) {
     if (tpl.setup === 'cloudinit') body.username = form.username.value.trim();
-    if (form.sshKeys.value.trim()) body.sshKeys = form.sshKeys.value.trim();
+    body.loginMethod = form.loginMethod.value;
+    const ids = [...form.querySelectorAll('[name=sshKeyIds]:checked:not(:disabled)')].map(k=>k.value);
+    if(ids.length) body.sshKeyIds = ids;
+    if (!form.sshKeys.disabled && form.sshKeys.value.trim()) body.sshKeys = form.sshKeys.value.trim();
   }
   const button = $('#reinstall-submit');
   button.disabled = true;
@@ -1620,9 +1690,10 @@ async function submitCreate(form) {
   }
   const tpl = findTemplate(form.templateId.value);
   const windows = tpl?.setup === 'windows';
-  const password = form.password.value;
-  const sshKeys = windows ? '' : form.sshKeys.value.trim();
-  if (!password && !sshKeys) {
+  const password = form.password.disabled ? '' : form.password.value;
+  const sshKeys = windows || form.sshKeys.disabled ? '' : form.sshKeys.value.trim();
+  const sshKeyIds = [...form.querySelectorAll('[name=sshKeyIds]:checked:not(:disabled)')].map(k=>k.value);
+  if (!password && !sshKeys && !sshKeyIds.length) {
     err.textContent = windows
       ? 'Set a password for the Administrator account.'
       : 'Set a password or add an SSH key so you can sign in to the server.';
@@ -1633,16 +1704,18 @@ async function submitCreate(form) {
     ...(state.createDestination ? { accessRuleId: state.createDestination } : {}),
     hostname: form.hostname.value.trim(),
     ...(tpl.setup === 'cloudinit' ? { username: form.username.value.trim() } : {}),
-    cores: Number(form.cores.value),
-    memoryMb: Number(form.memoryMb.value),
+    ...(form.sizeId ? { sizeId: form.sizeId.value, storageClassId: form.storageClassId.value } : { cores: Number(form.cores.value), memoryMb: Number(form.memoryMb.value) }),
     diskGb: Number(form.diskGb.value),
     ...(password ? { password } : {}),
     ...(sshKeys ? { sshKeys } : {}),
+    ...(!windows ? { loginMethod: form.loginMethod.value, ...(sshKeyIds.length ? { sshKeyIds } : {}) } : {}),
   };
   const button = $('#create-submit');
   button.disabled = true;
   try {
-    const { vmid } = await api('/api/vms', { method: 'POST', body });
+    const fingerprint = JSON.stringify(body);
+    if (form.requestFingerprint !== fingerprint) { form.requestFingerprint = fingerprint; form.requestKey = crypto.randomUUID(); }
+    const { vmid } = await api('/api/vms', { method: 'POST', body, headers: form.sizeId ? { 'Idempotency-Key': form.requestKey } : {} });
     toast(`Setting up ${body.hostname}`);
     state.account = await api('/api/account');
     await loadList();
@@ -1869,6 +1942,7 @@ $('#detail').addEventListener('click', (e) => {
     input.type = 'text';
   }
   if (t.hasAttribute('data-extend')) { extendExpiry(); return; }
+  if (t.hasAttribute('data-ha')) configureHa(state.detail,async()=>{await loadList();select(state.detail.vmid);}).catch(fail);
   if (t.hasAttribute('data-reinstall')) openReinstall();
   if (t.hasAttribute('data-resize')) openResize();
   if (t.hasAttribute('data-back-to-server') && state.detail) select(state.detail.vmid);
@@ -1930,6 +2004,9 @@ function openAccount() {
       </header>
       <div id="security"></div>
       <div id="passkeys" class="account-section"></div>
+      <div id="ssh-keys" class="account-section"></div>
+      <div id="compute-services" class="account-section"></div>
+      <div id="retained-backups" class="account-section"></div>
       ${state.account.panelVersion ? `
         <section class="security-card about-panel">
           <div>
@@ -1940,6 +2017,9 @@ function openAccount() {
     </div>`;
   renderSecurity($('#security'), { email: state.me.email });
   renderPasskeys($('#passkeys'));
+  renderSshKeys($('#ssh-keys'));
+  renderComputeServices($('#compute-services'));
+  if(state.account.customer?.role==='admin')renderRetainedBackups($('#retained-backups'));
 }
 $('#nav-account').addEventListener('click', openAccount);
 

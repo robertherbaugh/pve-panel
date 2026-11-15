@@ -27,7 +27,8 @@ test('offer a container image and create a container from it', async ({ page, br
   await choice.click();
   await expect(page.locator('#create-form [name=username]')).toBeHidden();
   await expect(page.locator('#create-form #windows-user')).toHaveText('root');
-  await expect(page.locator('#create-form [name=sshKeys]')).toBeVisible();
+  await expect(page.locator('#create-form [name=loginMethod]')).toHaveValue('password');
+  await expect(page.locator('#create-form [name=sshKeys]')).toBeHidden();
 
   await page.locator('#create-form [name=hostname]').fill('ct-e2e');
   await page.locator('#create-form [name=diskGb]').fill('8');

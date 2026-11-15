@@ -1,3 +1,6 @@
+import retainedBackupRoutes from './compute-retained-backups.js';
+import computeServiceRoutes from './compute-services.js';
+import sshKeyRoutes from './ssh-keys.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
@@ -14,11 +17,13 @@ import { startExpiryScheduler } from './expiry.js';
 import { currentScheme } from './appearance.js';
 import { initializeBranding, publicBranding, brandingFiles } from './branding.js';
 import brandingRoutes from './routes/branding.js';
+import computeCatalogRoutes from './routes/compute-catalog.js';
 import { startUpdateTracker } from './winupdate.js';
 import { startSetupCheckScheduler } from './setupcheck.js';
 import { startBackupScheduler } from './backups.js';
 import authPlugin from './auth.js';
 import vmRoutes from './routes/vms.js';
+import { startComputeRecovery } from './provision.js';
 import consoleRoutes from './routes/console.js';
 import vpnRoutes from './routes/vpn.js';
 import { syncOnStartup } from './vpn.js';
@@ -109,8 +114,11 @@ async function buildServer(name, setup) {
 const customer = await buildServer('customer', async (app) => {
   await app.register(websocket, { options: { maxPayload: 16 * 1024 * 1024 } });
   await app.register(authPlugin, { scope: 'customer' });
+  await app.register(computeServiceRoutes);
+  await app.register(retainedBackupRoutes);
   await app.register(customerContextRoutes);
   await app.register(vmRoutes);
+  await app.register(sshKeyRoutes);
   await app.register(consoleRoutes);
   await app.register(vpnRoutes);
 
@@ -131,6 +139,7 @@ const admin = await buildServer('admin', async (app) => {
   await app.register(adminCustomerRoutes);
   await app.register(adminRoutes);
   await app.register(brandingRoutes);
+  await app.register(computeCatalogRoutes);
 
   await app.register(fastifyStatic, { root: web('admin') });
   await app.register(fastifyStatic, { root: web('shared'), prefix: '/shared/', decorateReply: false });
@@ -143,6 +152,7 @@ startExpiryScheduler(admin.log);
 startUpdateTracker(admin.log);
 startSetupCheckScheduler(admin.log);
 startBackupScheduler(admin.log);
+startComputeRecovery(admin.log);
 
 await customer.listen({ port: config.port, host: config.host });
 await admin.listen({ port: config.adminPort, host: config.adminHost });

@@ -1,5 +1,10 @@
+import { assertNoHa, runHaOperation } from './compute-ha.js';
+import { runCatalogResize, lifecycleStep, lifecycleGuest, lifecycleFailed } from './compute-lifecycle.js';
+import { resolveSshKeys } from './ssh-keys.js';
 import { db, audit } from './db.js';
 import { config } from './config.js';
+import { resolveOffering, selectPlacement, checkOfferingRevision, verifyComputeDeleted } from './compute-placement.js';
+import { beginOperation, priorRequest, requestHash, updateOperation, completeOperation, operationById, operationCredentials, pendingOperations, releaseCompute, assertComputeIdle, computeManaged, operationStep, setOperationStep, releaseStaging, allocationFor } from './compute-state.js';
 import { capacityLocks,capacityBusy } from './capacity.js';
 import { customerById, requireCustomer } from './tenancy.js';
 import {
@@ -11,7 +16,7 @@ import { setupWindows, windowsPasswordProblem } from './windows.js';
 import { agentExec } from './agent.js';
 import { expiryForNewServer } from './expiry.js';
 import { activeRun } from './winupdate.js';
-import { forgetServerBackups } from './backups.js';
+import { forgetServerBackups, resumeCatalogRestore } from './backups.js';
 import { offeredContainerTemplates, containerRow, containerParams, containerMac } from './containers.js';
 import { cloneRule, cloneRules, withLimits, customerHasGuest, poolMembers } from './access.js';
 
@@ -132,6 +137,15 @@ export class ProvisionError extends Error {
 
 /** Sign-in rules per setup method (shared by create and reinstall). Mutates spec. */
 function applySetupRules(spec, offered) {
+  if (offered.setup !== 'windows') {
+    if (!spec.loginMethod && !spec.password && !spec.sshKeys?.trim()) throw new ProvisionError(400, 'Set a password or add an SSH key so you can sign in');
+    const method = spec.loginMethod ?? (spec.password ? (spec.sshKeys?.trim() ? 'both' : 'password') : 'ssh');
+    if (!['ssh','password','both'].includes(method)) throw new ProvisionError(400, 'Choose a sign-in method');
+    if ((method === 'ssh' || method === 'both') && !spec.sshKeys?.trim()) throw new ProvisionError(400, 'Select a saved SSH key or paste a public key');
+    if ((method === 'password' || method === 'both') && !spec.password) throw new ProvisionError(400, 'Set a password for this sign-in method');
+    if ((method === 'ssh' && spec.password) || (method === 'password' && spec.sshKeys?.trim())) throw new ProvisionError(400, 'Credentials must match the selected sign-in method');
+    spec.loginMethod = method;
+  } else if (spec.loginMethod || spec.sshKeyIds?.length) throw new ProvisionError(400, 'Windows images use their Administrator password');
   if (offered.setup === 'windows') {
     if (spec.hostname.length > 15) {
       throw new ProvisionError(400, 'Windows computer names can be at most 15 characters');
@@ -156,6 +170,13 @@ function applySetupRules(spec, offered) {
   spec.setup = offered.setup;
 }
 
+async function checkImageLogin(offered, tpl) {
+  if (offered.setup !== 'cloudinit') return;
+  const image = await pve.get(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/config`);
+  if (/(^|,)user=/.test(image.cicustom ?? '')) throw new ProvisionError(400, 'This image has custom cloud-init user data that overrides sign-in settings. The provider must prepare a compatible image.');
+  if (!Object.entries(image).some(([k,v]) => /^(ide|scsi|sata)\d+$/.test(k) && String(v).includes('cloudinit'))) throw new ProvisionError(400, 'The provider must add a cloud-init drive to this image before it can configure sign-in.');
+}
+
 /**
  * Validates quota, reserves a VMID and starts the clone. Returns the new VMID
  * right away; configuration, disk resize and first start continue in the
@@ -173,6 +194,13 @@ export async function createServer(req, spec) {
   }
   const account = grant ? withLimits(req.account, grant) : req.account;
   if (!account.can_create) throw new ProvisionError(403, 'Creating servers is not enabled for your account');
+  resolveSshKeys(req.account.id, spec);
+  const offering = resolveOffering(customer.id, spec);
+  if (!offering && (!Number.isInteger(spec.cores) || !Number.isInteger(spec.memoryMb))) throw new ProvisionError(400, 'CPU and memory are required');
+  const key = req.headers?.['idempotency-key'];
+  const hash = offering ? requestHash(spec) : null;
+  const previous = offering ? priorRequest(customer.id, account.id, key, hash) : null;
+  if (previous) return previous.vmid;
   if (capacityBusy(customer.id)) {
     throw new ProvisionError(409, 'Another server is being created. Wait until it has finished.');
   }
@@ -192,7 +220,7 @@ export async function createServer(req, spec) {
       const storages = isContainer ? [ctRow.storage] : tplRow.storage ? [tplRow.storage]
         : Object.entries(source).filter(([key, value]) => /^(?:(?:ide|sata|scsi|virtio)\d+|efidisk0|tpmstate0)$/.test(key) && !String(value).startsWith('none'))
           .map(([, value]) => String(value).split(':')[0]);
-      if (!storages.length || storages.some((storage) => !grant.clone.storages.includes(storage))) throw new ProvisionError(403, 'The image storage is not allowed at this destination');
+      if (!offering && (!storages.length || storages.some((storage) => !grant.clone.storages.includes(storage)))) throw new ProvisionError(403, 'The image storage is not allowed at this destination');
       destinationPool = grant.clone.pool;
       spec.accessTags = grant.tags.join(';');
       spec.accessRuleId = grant.id;
@@ -204,6 +232,7 @@ export async function createServer(req, spec) {
     }
 
     applySetupRules(spec, offered);
+    await checkImageLogin(offered, tpl);
 
     // Quota
     const limits = limitsOf(account);
@@ -225,7 +254,19 @@ export async function createServer(req, spec) {
     const net = config.network.enabled ? await ensureNetwork(account.id,customer.id) : null;
 
     // Reserve ID + start clone, serialised against other creations
-    const { vmid, upid } = await serial(async () => {
+    const insertVM = (id, operationId = null) => {
+      db.prepare(`INSERT INTO vms(vmid,user_id,type,state,created_by_customer,spec,progress,expires_at,expiry_set_at,access_managed,customer_id)
+        VALUES(?,?,?,'creating',1,?,?,?,?,?,?)`).run(id, account.id, isContainer ? 'lxc' : 'qemu', JSON.stringify({
+          cores: spec.cores, memoryMb: spec.memoryMb, diskGb: spec.diskGb, template: spec.templateId, hostname: spec.hostname,
+          loginMethod: spec.loginMethod, ...(offering ? { offering, operationId } : {}), ...(grant ? { accessRuleId: grant.id, pool: destinationPool } : {}),
+        }), 'Copying the image', expiryForNewServer(account.id,new Date(),customer.id), new Date().toISOString(), grant ? 1 : 0, customer.id);
+    };
+    const { vmid, upid, operationId = null, targetNode = tpl?.node, taskNode = tpl?.node } = await serial(async () => {
+      const sourceConfig = offering ? await pve.get(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/config`) : null;
+      if (offering && Object.entries(sourceConfig).filter(([k, v]) => /^(scsi|sata|virtio|ide)\d+$/.test(k) && !/media=cdrom|cloudinit/.test(String(v)) && !String(v).startsWith('none')).length !== 1) throw new ProvisionError(400, 'Catalog images must have one data disk');
+      if (offering && Object.keys(sourceConfig).some(k => /^net[1-9][0-9]*$/.test(k))) throw new ProvisionError(400, 'Catalog images must have one guest network interface');
+      if (offering && customer.pools.length && !customer.pools.includes(destinationPool)) throw new ProvisionError(403, 'The destination pool is outside this customer');
+      const placement = offering ? await selectPlacement({ offering, template: tpl, sourceConfig, pool: destinationPool, grant }) : null;
       // Proxmox's next free ID, skipping IDs the panel still has records for
       // (e.g. a VM that was deleted directly in Proxmox but is still assigned here).
       const known = db.prepare('SELECT 1 FROM vms WHERE vmid = ?');
@@ -248,6 +289,25 @@ export async function createServer(req, spec) {
         const current = cloneRule(req, grant.id);
         if (JSON.stringify(current) !== JSON.stringify(grant)) throw new ProvisionError(409, 'The cloning policy changed. Please try again.');
       }
+      if (offering) {
+        checkOfferingRevision(customer.id, offering);
+        const { password, username, sshKeys, ...safeSpec } = spec;
+        const op = beginOperation({ customerId: customer.id, userId: account.id, vmid: id, key, hash,
+          plan: { ...placement, spec: safeSpec, template: tplRow }, credentials: { password, username, sshKeys }, onReserve: opId => insertVM(id, opId) });
+        updateOperation(op.id, 'submitting');
+        try {
+          const task = await pve.post(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/clone`, {
+            newid: id, name: spec.hostname, full: 1, storage: placement.staging?.storage ?? placement.storage, pool: destinationPool,
+            target: placement.staging || placement.node === tpl.node ? undefined : placement.node, description: `pve-panel-operation:${op.id}`,
+          });
+          updateOperation(op.id, 'cloning', { upid: task, taskNode: tpl.node });
+          return { vmid: id, upid: task, operationId: op.id, targetNode: placement.node, taskNode: tpl.node };
+        } catch (err) {
+          updateOperation(op.id, 'review', { error: 'The clone outcome needs reconciliation.' });
+          db.prepare("UPDATE vms SET state='failed',error='The clone outcome needs provider reconciliation',progress=NULL WHERE vmid=?").run(id);
+          throw err;
+        }
+      }
       const task = isContainer
         ? await pve.post(`/nodes/${encodeURIComponent(ctRow.node)}/lxc`, containerParams({ vmid: id, row: ctRow, spec, net, pool: destinationPool }))
         : await pve.post(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/clone`, {
@@ -261,21 +321,14 @@ export async function createServer(req, spec) {
     });
 
     const templateRef = isContainer ? spec.templateId : tpl.vmid;
-    db.prepare(`
-      INSERT INTO vms (vmid, user_id, type, label, state, created_by_customer, spec, progress, expires_at, expiry_set_at, access_managed, customer_id)
-      VALUES (?, ?, ?, NULL, 'creating', 1, ?, ?, ?, ?, ?, ?)
-    `).run(vmid, account.id, isContainer ? 'lxc' : 'qemu', JSON.stringify({
-      cores: spec.cores, memoryMb: spec.memoryMb, diskGb: spec.diskGb, template: templateRef,
-      hostname: spec.hostname,
-      ...(grant ? { accessRuleId: grant.id, pool: destinationPool } : {}),
-    }), isContainer ? 'Creating the container' : 'Copying the image', expiryForNewServer(account.id,new Date(),customer.id), new Date().toISOString(), grant ? 1 : 0,customer.id);
+    if (!offering) insertVM(vmid);
     audit(req, vmid, 'server_create_started', { template: templateRef, hostname: spec.hostname, ...(grant ? { accessRuleId: grant.id, pool: destinationPool } : {}) });
 
     background = true;
     const actor = { account: { id: account.id }, customerId:customer.id, ip: req.ip };
     (isContainer
       ? finishContainer(actor, ctRow.node, vmid, upid, net)
-      : finishCreate(actor, tpl.node, vmid, upid, spec, tplRow, net))
+      : finishCreate(actor, targetNode, vmid, upid, spec, tplRow, net, { operationId, taskNode }))
       .finally(() => creatingFor.delete(capacityKey));
 
     return vmid;
@@ -286,29 +339,74 @@ export async function createServer(req, spec) {
 
 const setProgress = db.prepare('UPDATE vms SET progress = ? WHERE vmid = ?');
 
+async function finishPlacement(id) {
+  const op = operationById(id), plan = op.plan;
+  if (!plan.staging) return;
+  let guest = (await clusterGuests(true)).get(op.vmid);
+  if (!guest || guest.template) throw new Error('The staged VM is missing');
+  const cfg = await pve.get(`${guestPath(guest)}/config`);
+  if (cfg.lock || guest.lock || !String(cfg.description ?? '').includes(`pve-panel-operation:${id}`)) throw new Error('The staged VM identity or lock needs reconciliation');
+  const step = operationStep(id, 'migration');
+  if (step?.upid) await waitTask(step.task_node, step.upid);
+  guest = (await clusterGuests(true)).get(op.vmid);
+  if (guest?.node === plan.node) {
+    setOperationStep(id, 'migration', 'complete'); releaseStaging(id); return;
+  }
+  if (guest?.node !== plan.sourceNode || step) throw new Error('Migration outcome needs provider reconciliation. The panel will not repeat the migration.');
+  if (guest.status !== 'stopped') throw new Error('The staged VM must remain stopped');
+  const ha = await pve.get('/cluster/ha/status/current');
+  if (!Array.isArray(ha) || ha.some(s => s.type === 'lrm' && s.node === plan.node && /maintenance|lost|unavailable/i.test(s.status ?? ''))) throw new Error('The destination entered maintenance');
+  const actor = { account: { id: op.user_id }, customerId: op.customer_id, ip: 'placement' };
+  setOperationStep(id, 'migration', 'submitting');
+  const upid = await pve.post(`${guestPath(guest)}/migrate`, { target: plan.node, targetstorage: plan.storage, online: 0, 'with-local-disks': 1 });
+  setOperationStep(id, 'migration', 'running', upid, guest.node);
+  updateOperation(id, 'migrating', { upid, taskNode: guest.node });
+  await waitTask(guest.node, upid);
+  const placed = (await clusterGuests(true)).get(op.vmid);
+  if (placed?.node !== plan.node) throw new Error('Migration destination could not be verified');
+  const final = await pve.get(`${guestPath(placed)}/config`);
+  if (final.lock || placed.lock) throw new Error('Migration is still locked');
+  setOperationStep(id, 'migration', 'complete'); releaseStaging(id);
+  audit(actor, op.vmid, 'server_placed', { node: plan.node, storage: plan.storage });
+}
+
 async function finishCreate(actor, node, vmid, cloneUpid, spec, tplRow, net, {
-  mac = null, done = 'server_created', failed = 'server_create_failed',
+  mac = null, done = 'server_created', failed = 'server_create_failed', operationId = null, taskNode = node,
 } = {}) {
   const path = `/nodes/${encodeURIComponent(node)}/qemu/${vmid}`;
   const progress = (text) => setProgress.run(text, vmid);
   const windows = spec.setup === 'windows';
   try {
-    await waitTask(node, cloneUpid);
+    await waitTask(taskNode, cloneUpid);
+    if (operationId) {
+      await finishPlacement(operationId);
+      updateOperation(operationId, 'configuring');
+    }
 
     progress('Configuring');
     const cfg = await pve.get(`${path}/config`);
     const params = { cores: spec.cores, sockets: 1, memory: spec.memoryMb };
+    if (operationId) {
+      const plan = operationById(operationId).plan;
+      if (!String(cfg.description ?? '').includes(`pve-panel-operation:${operationId}`)) throw new Error('VM identity does not match its provisioning operation');
+      if (!String(cfg[bootDiskKey(cfg)] ?? '').startsWith(`${plan.storage}:`)) throw new Error('VM storage does not match its reserved class');
+      const network = plan.offering.network;
+      params.net0 = `${String(cfg.net0 ?? nicModel(cfg.net0)).split(',')[0]},bridge=${network.bridge}${network.vlan ? `,tag=${network.vlan}` : ''},firewall=1`;
+    }
     if (net) {
       // Customer's VNet, firewall on for isolation. A kept MAC (reinstall) gets
       // the same DHCP address again; otherwise Proxmox assigns a new one.
       params.net0 = `${nicModel(cfg.net0)}${mac ? `=${mac}` : ''},bridge=${net.vnet},firewall=1`;
     } else if (mac && cfg.net0) {
-      params.net0 = cfg.net0.replace(/^(\w+)=([0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5})/, `$1=${mac}`);
+      params.net0 = (params.net0 ?? cfg.net0).replace(/^(\w+)=([0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5})/, `$1=${mac}`);
     }
     if (!windows) {
       params.ciuser = spec.username;
       params.ipconfig0 = tplRow.ipconfig || 'ip=dhcp';
       if (spec.password) params.cipassword = spec.password;
+      // Clear image credentials that the customer did not select.
+      if (spec.loginMethod === 'ssh') params.delete = 'cipassword';
+      if (spec.loginMethod === 'password') params.delete = 'sshkeys';
       // Proxmox expects the key list URL-encoded (in addition to form encoding).
       if (spec.sshKeys) params.sshkeys = encodeURIComponent(`${spec.sshKeys.trim()}\n`);
     }
@@ -324,7 +422,7 @@ async function finishCreate(actor, node, vmid, cloneUpid, spec, tplRow, net, {
     }
 
     progress('Starting');
-    await waitTask(node, await pve.post(`${path}/status/start`));
+    if (!operationId || (await pve.get(`${path}/status/current`)).status !== 'running') await waitTask(node, await pve.post(`${path}/status/start`));
 
     if (windows) {
       await setupWindows({
@@ -337,11 +435,13 @@ async function finishCreate(actor, node, vmid, cloneUpid, spec, tplRow, net, {
       });
     }
 
-    db.prepare("UPDATE vms SET state = 'ready', error = NULL, progress = NULL WHERE vmid = ?").run(vmid);
+    const ready = () => db.prepare("UPDATE vms SET state = 'ready', error = NULL, progress = NULL WHERE vmid = ?").run(vmid);
+    if (operationId) completeOperation(operationId, ready); else ready();
     audit(actor, vmid, done);
   } catch (err) {
+    if (operationId) updateOperation(operationId, 'review', { error: String(err.message).slice(0, 500) });
     db.prepare("UPDATE vms SET state = 'failed', error = ?, progress = NULL WHERE vmid = ?")
-      .run(String(err.message).slice(0, 500), vmid);
+      .run(operationId ? 'Provisioning needs provider reconciliation' : String(err.message).slice(0, 500), vmid);
     audit(actor, vmid, failed, { error: err.message });
   } finally {
     invalidateGuestCache();
@@ -389,6 +489,9 @@ function lifecycleAccount(req,row,customer) {
 }
 
 export async function reinstallServer(req, row, input) {
+  resolveSshKeys(req.account.id, input);
+  assertComputeIdle(row.vmid);
+  const allocation=allocationFor(row.vmid);
   const customer=requireCustomer(req);
   const account=lifecycleAccount(req,row,customer);
   const capacityKey=`customer:${customer.id}`;
@@ -439,6 +542,7 @@ export async function reinstallServer(req, row, input) {
     }
     applySetupRules(spec, offered);
     const tpl = isContainer ? null : await locateTemplate(spec.templateId);
+    await checkImageLogin(offered, tpl);
     const templateRef = isContainer ? spec.templateId : tpl.vmid;
     let destinationPool=config.pve.pool;
     if(customer.pools.length) {
@@ -447,6 +551,27 @@ export async function reinstallServer(req, row, input) {
       if(!destinationPool) throw new ProvisionError(403,'The reinstall destination is outside this customer’s pool boundary');
     }
     const net = config.network.enabled ? await ensureNetwork(account.id,row.customer_id) : null;
+    if (allocation) {
+      await assertNoHa(row.vmid);
+      if (!guest || guest.type!=='qemu' || guest.status!=='stopped' || guest.lock || oldCfg.lock) throw new ProvisionError(409,'Stop the VM and wait for its tasks before reinstalling');
+      if (allocation.offering.haEnabled) throw new ProvisionError(409,'Disable HA before reinstalling this VM');
+      if (Object.entries((await pve.get(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/config`))).filter(([k,v])=>/^(scsi|sata|virtio|ide)\d+$/.test(k)&&!/media=cdrom|cloudinit/.test(String(v))&&!String(v).startsWith('none')).length!==1) throw new ProvisionError(400,'Catalog images must have one data disk');
+      const sourceConfig=await pve.get(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/config`);
+      if (Object.keys(sourceConfig).some(k=>/^net[1-9][0-9]*$/.test(k))) throw new ProvisionError(400,'Catalog images must have one guest network interface');
+      const offering=allocation.offering, storage=String(oldCfg[oldDisk]).split(':')[0];
+      if (Number(oldCfg.cores)*Number(oldCfg.sockets??1)!==offering.cores || Number(oldCfg.memory)!==offering.memoryMb || Math.ceil(diskSizeGb(oldCfg[oldDisk]))!==offering.diskGb) throw new ProvisionError(409,'Reconcile the VM hardware with its allocation before reinstalling');
+      const op=await serial(async()=>{
+        const plan=await selectPlacement({offering,template:tpl,sourceConfig,pool:destinationPool,existing:{vmid,node:guest.node,storage,diskGb:0,clone:true}});
+        const {password,username,sshKeys,...safeSpec}=spec;
+        return beginOperation({customerId:customer.id,userId:req.account.id,vmid,kind:'reinstalled',plan:{...plan,spec:safeSpec,template:tplRow,mac},credentials:{password,username,sshKeys},onReserve:id=>{
+          db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Reinstalling',spec=?,ostype=NULL WHERE vmid=?").run(JSON.stringify({...old,template:spec.templateId,loginMethod:spec.loginMethod,operationId:id,offering,pool:destinationPool,mac}),vmid);
+          db.prepare('DELETE FROM tasks WHERE vmid=?').run(vmid);
+          db.prepare('DELETE FROM tailscale WHERE vmid=?').run(vmid);
+        }});
+      });
+      runCatalogReinstall(op.id);
+      return;
+    }
 
     // The row keeps the ID reserved: new creations skip IDs the panel knows.
     db.prepare(`
@@ -524,7 +649,11 @@ else { 'nothing' }
  * within the plan. CPU/memory on a running server take effect at the next
  * restart by Proxmox (optionally right away); disks only grow.
  */
-export async function resizeServer(req, row, { cores, memoryMb, diskGb, restart = false }) {
+export async function resizeServer(req, row, input) {
+  const { cores, memoryMb, diskGb, restart = false } = input;
+  assertComputeIdle(row.vmid);
+  const allocation = allocationFor(row.vmid);
+  if (!allocation && input.sizeId) throw new ProvisionError(400,'This VM does not use catalog sizes');
   const customer=requireCustomer(req);
   const account=lifecycleAccount(req,row,customer);
   const capacityKey=`customer:${customer.id}`;
@@ -549,7 +678,9 @@ export async function resizeServer(req, row, { cores, memoryMb, diskGb, restart 
       memoryMb: Number(cfg.memory) || 512,
       diskGb: disk ? Math.ceil(diskSizeGb(cfg[disk])) : 0,
     };
-    const next = { cores: cores ?? cur.cores, memoryMb: memoryMb ?? cur.memoryMb, diskGb: diskGb ?? cur.diskGb };
+    const oldSpec = JSON.parse(row.spec ?? '{}');
+    const offering = allocation ? resolveOffering(customer.id, { ...input, templateId:oldSpec.template, storageClassId:allocation.offering.storageClassId, diskGb:diskGb ?? cur.diskGb },row.vmid) : null;
+    const next = offering ? { cores:offering.cores,memoryMb:offering.memoryMb,diskGb:offering.diskGb } : { cores: cores ?? cur.cores, memoryMb: memoryMb ?? cur.memoryMb, diskGb: diskGb ?? cur.diskGb };
 
     if (next.diskGb < cur.diskGb) throw new ProvisionError(400, `Disks can only grow; this one has ${cur.diskGb} GB`);
     if (next.diskGb > cur.diskGb && !disk) throw new ProvisionError(400, "This server's disk can't be resized here");
@@ -573,6 +704,22 @@ export async function resizeServer(req, row, { cores, memoryMb, diskGb, restart 
     if (others.diskGb + next.diskGb > limits.diskGb) over.push(`disk (at most ${limits.diskGb - others.diskGb} GB for this server)`);
     if (over.length) throw new ProvisionError(409, `This exceeds your plan: ${over.join(', ')}`);
 
+    if (allocation) {
+      await assertNoHa(row.vmid);
+      if (guest.status !== 'stopped' || cfg.lock || guest.lock) throw new ProvisionError(409,'Stop the VM and wait for its tasks before changing its catalog size');
+      if (allocation.offering.haEnabled) throw new ProvisionError(409,'Disable HA before changing this VM size');
+      const pool=oldSpec.pool ?? config.pve.pool, storage=String(cfg[disk]).split(':')[0];
+      if (!(await poolMembers(pool)).has(row.vmid) || customer.pools.length && !customer.pools.includes(pool)) throw new ProvisionError(403,'The VM is outside the customer pool');
+      const op=await serial(async()=>{
+        const placement=await selectPlacement({offering,template:guest,sourceConfig:cfg,pool,existing:{vmid:row.vmid,node:guest.node,storage,diskGb:cur.diskGb}});
+        checkOfferingRevision(customer.id,offering);
+        return beginOperation({customerId:customer.id,userId:req.account.id,vmid:row.vmid,kind:'resized',plan:{...placement,reserveDiskGb:next.diskGb-cur.diskGb,cores:Math.max(cur.cores,next.cores),memoryMb:Math.max(cur.memoryMb,next.memoryMb)},onReserve:id=>{
+          db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Changing size',spec=? WHERE vmid=?").run(JSON.stringify({...oldSpec,cores:Math.max(cur.cores,next.cores),memoryMb:Math.max(cur.memoryMb,next.memoryMb),diskGb:next.diskGb,operationId:id}),row.vmid);
+        }});
+      });
+      runCatalogResize(op.id);
+      return { operationId:op.id,accepted:true,before:cur,after:next,pendingRestart:false };
+    }
     const running = guest.status === 'running';
     const container = guest.type === 'lxc'; // containers take new CPU/memory limits right away
     if (cpuMemChanged) {
@@ -635,11 +782,15 @@ export async function resizeServer(req, row, { cores, memoryMb, diskGb, restart 
 
 /** Destroys a customer-created server (must be stopped) and removes its record. */
 export async function deleteServer(req, row) {
+  assertComputeIdle(row.vmid);
+  if (computeManaged(row.vmid)) await assertNoHa(row.vmid);
   const guests = await clusterGuests(true);
   const guest = guests.get(row.vmid);
 
   if (!guest) {
-    // Clone never happened or VM already gone: just drop the record.
+    // Unresolved clones are blocked above. Only verified absence releases an allocation.
+    await verifyComputeDeleted(row.vmid);
+    releaseCompute(row.vmid);
     db.prepare('DELETE FROM vms WHERE vmid = ?').run(row.vmid);
     audit(req, row.vmid, 'server_deleted');
     return { removed: true };
@@ -649,6 +800,7 @@ export async function deleteServer(req, row) {
   }
 
   const path = guestPath(guest); // VM or container
+  if (computeManaged(row.vmid) && (await pve.get(`${path}/config`)).lock) throw new ProvisionError(409, 'Wait until Proxmox unlocks this VM');
   const upid = await pve.del(path, { purge: 1, 'destroy-unreferenced-disks': 1 });
   db.prepare("UPDATE vms SET state = 'deleting' WHERE vmid = ?").run(row.vmid);
   audit(req, row.vmid, 'server_delete_started');
@@ -656,6 +808,8 @@ export async function deleteServer(req, row) {
   const actor = { account: { id: req.account.id }, customerId:row.customer_id, ip: req.ip };
   waitTask(guest.node, upid)
     .then(async () => {
+      await verifyComputeDeleted(row.vmid);
+      releaseCompute(row.vmid);
       db.prepare('DELETE FROM vms WHERE vmid = ?').run(row.vmid);
       audit(actor, row.vmid, 'server_deleted');
       await forgetServerBackups(row.vmid, guest.node);
@@ -667,4 +821,101 @@ export async function deleteServer(req, row) {
     .finally(invalidateGuestCache);
 
   return { removed: false };
+}
+
+// Recovery follows accepted clone tasks. It never resubmits an ambiguous clone.
+async function runCatalogReinstall(id) {
+  const op=operationById(id), actor={account:{id:op.user_id},customerId:op.customer_id,ip:'compute'};
+  try {
+    const row=db.prepare('SELECT spec FROM vms WHERE vmid=? AND customer_id=?').get(op.vmid,op.customer_id);
+    if (!row || JSON.parse(row.spec??'{}').operationId!==id) throw new Error('VM ownership needs reconciliation');
+    db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Reinstalling' WHERE vmid=?").run(op.vmid);
+    const destroyed=operationStep(id,'destroy');
+    if (destroyed?.upid && destroyed.state!=='complete') await waitTask(destroyed.task_node,destroyed.upid);
+    if (destroyed?.state!=='complete') {
+      if (destroyed && !destroyed.upid) throw new Error('The deletion outcome needs provider reconciliation');
+      if (!destroyed) {
+        const {guest,path}=await lifecycleGuest(op);
+        if (guest.status!=='stopped') throw new Error('Stop the VM before reinstalling');
+        await lifecycleStep(id,'destroy',()=>pve.del(path,{purge:1,'destroy-unreferenced-disks':1}),()=>verifyComputeDeleted(op.vmid).then(()=>true));
+      } else { await verifyComputeDeleted(op.vmid); setOperationStep(id,'destroy','complete'); }
+    }
+    let cloned=operationStep(id,'clone');
+    if (!cloned) {
+      setOperationStep(id,'clone','submitting');
+      const upid=await pve.post(`/nodes/${encodeURIComponent(op.plan.sourceNode)}/qemu/${op.plan.templateId}/clone`,{newid:op.vmid,name:op.plan.spec.hostname,full:1,storage:op.plan.staging?.storage??op.plan.storage,pool:op.plan.pool,target:op.plan.staging||op.plan.sourceNode===op.plan.node?undefined:op.plan.node,description:`pve-panel-operation:${id}`});
+      setOperationStep(id,'clone','running',upid,op.plan.sourceNode);
+      updateOperation(id,'cloning',{upid,taskNode:op.plan.sourceNode});
+      cloned=operationStep(id,'clone');
+    }
+    if (!cloned.upid) throw new Error('The clone outcome needs provider reconciliation');
+    await finishCreate(actor,op.plan.node,op.vmid,cloned.upid,{...op.plan.spec,...operationCredentials(id)},op.plan.template,null,{operationId:id,taskNode:cloned.task_node,mac:op.plan.mac,done:'server_reinstalled',failed:'server_reinstall_failed'});
+  } catch(err) {lifecycleFailed(id,err);}
+}
+
+export function startComputeRecovery(log) {
+  for (const op of pendingOperations()) {
+    if (['ha-enabled','ha-disabled'].includes(op.kind)) {runHaOperation(op.id);continue;}
+    if (op.kind === 'restored') continue; // The backup queue owns restore recovery.
+    if (op.kind === 'reinstalled') { runCatalogReinstall(op.id); continue; }
+    if (op.kind === 'resized') { runCatalogResize(op.id); continue; }
+    if (op.kind !== 'create') { updateOperation(op.id, 'review', { error: 'Interrupted operation needs reconciliation' }); continue; }
+    if (!op.upid || !op.task_node) {
+      updateOperation(op.id, 'review', { error: 'Interrupted before the task response was recorded. Reconcile before retrying.' });
+      continue;
+    }
+    const row = db.prepare('SELECT * FROM vms WHERE vmid=? AND customer_id=?').get(op.vmid, op.customer_id);
+    if (!row || JSON.parse(row.spec ?? '{}').operationId !== op.id) { updateOperation(op.id, 'review', { error: 'VM ownership needs reconciliation' }); continue; }
+    try {
+      const spec = { ...op.plan.spec, ...operationCredentials(op.id) };
+      db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Resuming provisioning' WHERE vmid=?").run(op.vmid);
+      finishCreate({ account: { id: op.user_id }, customerId: op.customer_id, ip: 'recovery' }, op.plan.node, op.vmid, op.upid, spec, op.plan.template, null, { operationId: op.id, taskNode: op.task_node }).catch(err => log.warn(err.message));
+    } catch { updateOperation(op.id, 'review', { error: 'Provisioning credentials could not be recovered' }); }
+  }
+}
+
+// Resume only an existing, identifiable VM. Never retry a clone POST.
+export async function reconcileComputeOperation(req, id, action) {
+  const op = operationById(id);
+  if (op?.state==='review' && ['ha-enabled','ha-disabled'].includes(op.kind) && action==='resume') {updateOperation(id,'configuring');runHaOperation(id);return {accepted:true};}
+  if (op?.state==='review' && op.kind==='restored' && action==='resume') return resumeCatalogRestore(id);
+  if (op?.kind==='reinstalled' && !operationStep(id,'clone')) throw new ProvisionError(409,'An unknown deletion requires provider investigation');
+  if (op?.state === 'review' && op.kind === 'resized' && action === 'resume') {
+    updateOperation(id,'configuring');
+    runCatalogResize(id);
+    return {accepted:true};
+  }
+  if (!op || op.state !== 'review' || !['create','reinstalled'].includes(op.kind)) throw new ProvisionError(409, 'This operation is not awaiting create reconciliation');
+  const row = db.prepare('SELECT * FROM vms WHERE vmid=? AND customer_id=?').get(op.vmid, op.customer_id);
+  if (!row || JSON.parse(row.spec ?? '{}').operationId !== id) throw new ProvisionError(409, 'VM ownership needs manual reconciliation');
+  if (op.upid && op.task_node) {
+    const status = await pve.get(`/nodes/${encodeURIComponent(op.task_node)}/tasks/${encodeURIComponent(op.upid)}/status`);
+    if (status.status !== 'stopped') throw new ProvisionError(409, 'The Proxmox task is still running');
+    if (action === 'resume' && status.exitstatus !== 'OK') throw new ProvisionError(409, 'The Proxmox task failed. Inspect the VM before continuing.');
+  }
+  const guest = (await clusterGuests(true)).get(op.vmid);
+  if (action === 'release') {
+    const migration = operationStep(id, 'migration');
+    if (migration && migration.state !== 'complete') {
+      if (!migration.upid || !migration.task_node) throw new ProvisionError(409, 'An unknown migration retains its reservation');
+      const status = await pve.get(`/nodes/${encodeURIComponent(migration.task_node)}/tasks/${encodeURIComponent(migration.upid)}/status`);
+      if (status.status !== 'stopped') throw new ProvisionError(409, 'Migration is still running');
+    }
+    if (!op.upid || !op.task_node || guest) throw new ProvisionError(409, 'Release requires a recorded terminal task and verified VM absence. Unknown submissions retain their reservation.');
+    await verifyComputeDeleted(op.vmid);
+    releaseCompute(op.vmid);
+    db.prepare('DELETE FROM vms WHERE vmid=?').run(op.vmid);
+  } else {
+    if (!guest || guest.template || ![op.plan.node, ...(op.plan.staging ? [op.plan.sourceNode] : [])].includes(guest.node)) throw new ProvisionError(409, 'The expected VM is not present on its reserved node');
+    const cfg = await pve.get(`${guestPath(guest)}/config`);
+    if (operationStep(id, 'migration') && guest.node !== op.plan.node) throw new ProvisionError(409, 'An attempted migration must be reconciled on its destination before resuming');
+    if (guest.lock || cfg.lock || !String(cfg.description ?? '').includes(`pve-panel-operation:${id}`) || !(await pve.get(`/pools/${encodeURIComponent(op.plan.pool)}`)).members?.some(m => Number(m.vmid) === op.vmid && m.type === 'qemu')) throw new ProvisionError(409, 'VM identity, pool or lock state needs manual reconciliation');
+    const spec = { ...op.plan.spec, ...operationCredentials(id) };
+    if (operationById(id).state !== 'review') throw new ProvisionError(409, 'This operation already resumed');
+    updateOperation(id, 'configuring');
+    db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Resuming provisioning' WHERE vmid=?").run(op.vmid);
+    finishCreate({ account: { id: op.user_id }, customerId: op.customer_id, ip: req.ip }, op.plan.node, op.vmid, null, spec, op.plan.template, null, { operationId: id, mac:op.plan.mac, ...(op.kind==='reinstalled'?{done:'server_reinstalled',failed:'server_reinstall_failed'}:{}) });
+  }
+  audit({ account: req.account, customerId: op.customer_id, ip: req.ip }, op.vmid, 'admin_compute_reconcile', { id, action });
+  return { accepted: true };
 }

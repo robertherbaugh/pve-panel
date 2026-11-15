@@ -1,0 +1,41 @@
+import {test,expect} from '@playwright/test';
+import {startStack,waitFor} from '../support/stack.mjs';
+test('customer resizes and reinstalls a catalog VM, accepts native HA terms and selects backup service',async({browser})=>{
+ const stack=await startStack({env:{CUSTOMER_NETWORKS:'false',VPN_ENABLED:'false',SETUP_CHECK_HOURS:'0'}}),page=await browser.newPage(),provider=await browser.newPage(),errors=[];
+ page.on('pageerror',e=>errors.push(e.message));provider.on('pageerror',e=>errors.push(e.message));
+ try {
+  const admin=await stack.adminSession();await stack.offerTemplates();const user=await stack.customerWith('lifecycle-browser@example.com',{limits:{}});
+  const id=(await admin.get('/api/admin/customers')).json.customers.find(c=>c.name==='lifecycle-browser@example.com').id;
+  const nodes=['pve1','pve2','pve3'];stack.mock.perms['/vms']=['VM.Audit'];stack.mock.perms['/'].push('Sys.Console');stack.mock.perms['/pool/customers'].push('Pool.Audit');
+  stack.mock.cluster.nodes=nodes.map(node=>({node,status:'online',maxcpu:64,maxmem:128*2**30,mem:2**30}));
+  stack.mock.cluster.haStatus=nodes.map(node=>({type:'lrm',node,status:'active'}));
+  stack.mock.cluster.storageInventories=Object.fromEntries(nodes.map(node=>[node,[{storage:'VMStorage',content:'images',active:1,enabled:1,shared:1,total:1000*2**30,avail:900*2**30}]]));
+  let c=(await admin.get('/api/admin/compute-catalog')).json;c.sizes[0].enabled=true;c.sizes[1].enabled=true;c.classes[2].enabled=true;c.classes[2].bindings=nodes.map(node=>({node,storage:'VMStorage',purpose:'vm'}));
+  c=(await admin.put('/api/admin/compute-catalog',{revision:c.revision,sizes:c.sizes,classes:c.classes.map(({id,enabled,bindings})=>({id,enabled,bindings})),reserves:c.reserves})).json;
+  const p=(await admin.get(`/api/admin/customers/${id}/compute-profile`)).json;
+  const {revision,tier,sizeIds,storageClassIds,haAllowed,backupServiceEnabled,storageLimitsGb,backupLimitGb}=p;
+  expect((await admin.put(`/api/admin/customers/${id}/compute-profile`,{revision,catalogRevision:c.revision,tier,sizeIds,storageClassIds,haAllowed,backupServiceEnabled,storageLimitsGb,backupLimitGb,catalogEnabled:true,network:{bridge:'vmbr0',vlan:47,verified:true}})).status).toBe(200);
+  const response=await fetch(user.base+'/api/vms',{method:'POST',headers:{cookie:[...user.cookies].map(([k,v])=>`${k}=${v}`).join('; '),'content-type':'application/json','idempotency-key':crypto.randomUUID()},body:JSON.stringify({hostname:'catalog-life',templateId:9000,sizeId:'small',storageClassId:'fast',diskGb:20,username:'debian',password:'compute-password-123'})});expect(response.status).toBe(202);const {vmid}=await response.json();await stack.serverSettled(user,vmid);stack.mock.vms.get(vmid).status='stopped';
+  await page.goto(stack.customerUrl);await page.locator('#login-form [name=email]').fill('lifecycle-browser@example.com');await page.locator('#login-form [name=password]').fill('another-long-password');await page.locator('#login-form button[type=submit]').click();
+  await page.locator('.unit').filter({hasText:'catalog-life'}).click();await page.getByRole('button',{name:'Change size…',exact:true}).click();
+  await expect(page.locator('#resize-form [name=cores]')).toHaveCount(0);await page.getByRole('combobox',{name:'VM size',exact:true}).selectOption('medium');await page.getByLabel('Disk (GiB)',{exact:true}).fill('25');const resized=await Promise.all([page.waitForResponse(r=>r.url().endsWith(`/api/vms/${vmid}/resize`)&&r.request().method()==='POST'),page.getByRole('button',{name:'Apply',exact:true}).click()]);expect(resized[0].status()).toBe(200);await stack.serverSettled(user,vmid);
+  await page.reload();await page.locator('.unit').filter({hasText:'catalog-life'}).click();await page.getByRole('button',{name:'Reinstall…',exact:true}).click();
+  const f=page.locator('#reinstall-form');await f.locator('[name=username]').fill('newuser');await f.locator('[name=password]').fill('new-password-123');await f.locator('[name=confirm]').fill('catalog-life');const reinstalled=await Promise.all([page.waitForResponse(r=>r.url().endsWith(`/api/vms/${vmid}/reinstall`)&&r.request().method()==='POST'),f.getByRole('button',{name:'Erase and reinstall',exact:true}).click()]);expect(reinstalled[0].status()).toBe(202);await stack.serverSettled(user,vmid);stack.mock.vms.get(vmid).status='stopped';
+  expect(Number(stack.mock.vms.get(vmid).cfg.cores)).toBe(2);expect(stack.mock.vms.get(vmid).cfg.net0).toContain('tag=47');
+  await provider.goto(stack.adminUrl);await provider.locator('#login-form [name=email]').fill('admin@example.com');await provider.locator('#login-form [name=password]').fill('correct-horse-battery');await provider.locator('#login-form button[type=submit]').click();await provider.getByRole('tab',{name:'Compute',exact:true}).click();
+  const ha=provider.locator('.security-card').filter({has:provider.getByRole('heading',{name:'Native Proxmox HA',exact:true})});
+  await ha.getByLabel('Offer the HA add-on',{exact:true}).check();for(const node of nodes)await ha.getByLabel(node,{exact:true}).check();await ha.getByLabel('SLA version',{exact:true}).fill('2026-11');await ha.getByLabel('MSA version',{exact:true}).fill('2026-11');await ha.getByLabel('HA add-on terms',{exact:true}).fill('HA restarts the VM after host failure. Service commitments apply.');await ha.locator('[name=verified]').check();await ha.getByRole('button',{name:'Save HA policy',exact:true}).click();await expect(ha.getByRole('status')).toHaveText('HA policy saved.');
+  await page.reload();await page.locator('.unit').filter({hasText:'catalog-life'}).click();await page.getByRole('button',{name:'Enable HA add-on…',exact:true}).click();const d=page.getByRole('dialog',{name:'Enable HA add-on',exact:true});await expect(d).toContainText('2026-11');await d.getByRole('checkbox').check();const enrolled=await Promise.all([page.waitForResponse(r=>r.url().endsWith(`/api/vms/${vmid}/ha`)&&r.request().method()==='POST'),d.getByRole('button',{name:'Enable HA',exact:true}).click()]);expect(enrolled[0].status()).toBe(202);await expect(d).toHaveCount(0);await stack.serverSettled(user,vmid);
+  await page.reload();await page.locator('.unit').filter({hasText:'catalog-life'}).click();await expect(page.getByRole('heading',{name:'HA Enabled: Yes',exact:true})).toBeVisible();
+  await page.locator('#nav-account').click();const services=page.locator('#compute-services');await services.getByRole('checkbox',{name:'Backup service',exact:true}).check();await services.getByRole('button',{name:'Save add-ons',exact:true}).click();await expect(services.getByRole('status')).toHaveText('Customer add-ons saved.');
+  const remote=provider.locator('.security-card').filter({has:provider.getByRole('heading',{name:'Private access enrollment',exact:true})});
+  await remote.getByRole('combobox',{name:'Control server',exact:true}).selectOption('headscale');await remote.getByLabel('Headscale HTTPS URL',{exact:true}).fill('https://headscale.example.com');await remote.getByRole('button',{name:'Save private access',exact:true}).click();await expect(remote.getByRole('status')).toHaveText('Private access settings saved.');
+  expect((await admin.put('/api/admin/vms/101',{customerId:id})).status).toBe(200);stack.mock.vms.get(101).cfg.net0='virtio=BC:24:11:00:00:07,bridge=vmbr0,tag=47,firewall=1';
+  await provider.getByRole('button',{name:'Reload catalog',exact:true}).click();
+  const adopt=provider.locator('.security-card').filter({has:provider.getByRole('heading',{name:'Adopt an existing VM',exact:true})});
+  await adopt.getByRole('combobox',{name:'Assigned VM',exact:true}).selectOption('101');await adopt.getByRole('combobox',{name:'Matching VM size',exact:true}).selectOption('medium');await adopt.getByRole('combobox',{name:'Existing storage class',exact:true}).selectOption('fast');await adopt.getByLabel('Confirm VM name',{exact:true}).fill('web01');
+  await adopt.getByRole('button',{name:'Adopt VM',exact:true}).click();await expect(adopt.getByRole('status')).toHaveText('VM adopted. Customer lifecycle controls are available.');
+  if(process.env.COMPUTE_SCREENSHOT)await provider.screenshot({path:process.env.COMPUTE_SCREENSHOT,fullPage:true});
+  expect(errors).toEqual([]);
+ }finally{await page.close();await provider.close();await stack.stop();}
+});

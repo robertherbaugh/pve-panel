@@ -49,7 +49,7 @@ export async function startMockPve({ port = 0 } = {}) {
 
   // ---- Setup check state ---------------------------------------------------------
   const VM_PRIVS = ['VM.Audit', 'VM.PowerMgmt', 'VM.Console', 'VM.Snapshot', 'VM.Snapshot.Rollback', 'VM.GuestAgent.Audit',
-    'VM.GuestAgent.Unrestricted', 'VM.Allocate', 'VM.Clone', 'VM.Config.CPU', 'VM.Config.Memory', 'VM.Config.Disk',
+    'VM.GuestAgent.Unrestricted', 'VM.Migrate', 'VM.Allocate', 'VM.Clone', 'VM.Config.CPU', 'VM.Config.Memory', 'VM.Config.Disk',
     'VM.Config.Cloudinit', 'VM.Config.Options', 'VM.Config.Network', 'VM.Backup', 'VM.Config.HWType', 'VM.Config.CDROM'];
   const perms = {
     '/pool/customers': [...VM_PRIVS], '/pool/templates': ['VM.Audit', 'VM.Clone'],
@@ -107,9 +107,10 @@ export async function startMockPve({ port = 0 } = {}) {
       const onCmdLine = key && script.includes(key);
       log('TS up', vmid, 'key on command line:', onCmdLine ? 'YES!' : 'no', '| key file present:', !!key);
       if (!key || key.startsWith('tskey-auth-bad')) return { out: '', code: 1, err: 'backend error: invalid key: API key does not exist\n' };
+      if (cluster.echoTsKeyFailure) return { out: '', code: 1, err: `backend error: invalid key ${key}` };
       const host = /--hostname=([a-z0-9-]+)/.exec(script)?.[1];
       const routes = /--advertise-routes=(\S+)/.exec(script)?.[1] ?? null;
-      vm.ts = { ip: `100.101.102.${vmid % 250}`, host, routes };
+      vm.ts = { ip: `100.101.102.${vmid % 250}`, host, routes,loginServer:/--login-server=['\"]?([^'\"\s]+)/.exec(script)?.[1]??'' };
       vm.tsKey = undefined;
       return { out: script.includes('--unattended') ? 'connected\n' : '', code: 0, err: '' };
     }
@@ -180,6 +181,7 @@ export async function startMockPve({ port = 0 } = {}) {
   const srv = http.createServer(async (req, res) => {
     const u = new URL(req.url, 'http://x'); const p = u.pathname.replace('/api2/json','');
     if (req.headers.authorization !== 'PVEAPIToken=panel@pve!panel=x') return send(res, null, 401);
+    cluster.observedRequests?.push({ method: req.method, path: p });
     // like Proxmox: the pool of a guest is only shown with Pool.Audit on that pool
     if (p === '/cluster/resources') return send(res, [...vms.values()].map(({cfg, pool, ...v}) => ({...v, tags: cfg?.tags ?? v.tags, ...(pool && 'Pool.Audit' in effective(`/pool/${pool}`) ? { pool } : {}), id:`${v.type}/${v.vmid}`, cpu:0.05, mem:v.maxmem/4, uptime: v.status==='running'?600:0})));
     if (p === '/version') return send(res, { version: '9.0.6', release: '9.0', repoid: 'mock' });
@@ -206,8 +208,36 @@ export async function startMockPve({ port = 0 } = {}) {
     if (p === '/__vms') return send(res, [...vms.keys()]);
     if (p.startsWith('/__clearfw/')) { const v = vms.get(Number(p.split('/')[2])); v.fwRules = (v.fwRules ?? []).filter(r => r.type !== 'out'); return send(res, 'cleared'); }
     if (p === '/cluster/nextid') { const want = u.searchParams.get('vmid'); if (want) return vms.has(Number(want)) ? send(res,null,400,`VM ${want} already exists`) : send(res, want); let id=100; while (vms.has(id)) id++; return send(res, String(id)); }
-    if (p === '/nodes') return send(res, [{ node: 'pve1', status: 'online' }]);
+    if (p === '/cluster/status') return send(res,cluster.clusterStatus??[{type:'cluster',quorate:1}]);
+    if (p === '/cluster/ha/resources' && req.method==='GET') return send(res,cluster.haResources??[]);
+    if (p === '/cluster/ha/resources' && req.method==='POST') {
+      const b=await body(req);cluster.haResources??=[];
+      if(cluster.haResources.some(r=>r.sid===b.sid)) return send(res,null,409,'HA resource already exists');
+      cluster.haResources.push(b);return send(res,null);
+    }
+    if(p.startsWith('/cluster/ha/resources/')) {
+      const sid=decodeURIComponent(p.slice('/cluster/ha/resources/'.length)),r=(cluster.haResources??[]).find(r=>r.sid===sid);
+      if(!r) return send(res,null,404,'HA resource missing');
+      if(req.method==='PUT') {const b=await body(req);Object.assign(r,b);const vm=vms.get(Number(sid.split(':')[1]));if(vm)vm.status=b.state==='started'?'running':'stopped';return send(res,null);}
+      if(req.method==='DELETE'){cluster.haResources=cluster.haResources.filter(r=>r.sid!==sid);cluster.haRules=(cluster.haRules??[]).filter(r=>r.resources!==sid);return send(res,null);}
+      return send(res,r);
+    }
+    if(p==='/cluster/ha/rules' && req.method==='GET')return send(res,cluster.haRules??[]);
+    if(p==='/cluster/ha/rules' && req.method==='POST'){
+      const b=await body(req);cluster.haRules??=[];
+      if(cluster.haRules.some(r=>r.rule===b.rule))return send(res,null,409,'HA rule exists');
+      if(!(cluster.haResources??[]).some(r=>r.sid===b.resources))return send(res,null,400,'Unmanaged resource');
+      cluster.haRules.push({...b,strict:Number(b.strict)});if(cluster.loseHaRuleResponse){cluster.loseHaRuleResponse=false;return res.destroy();}return send(res,null);
+    }
+    if (p === '/cluster/ha/status/current') return send(res, cluster.haStatus ?? []);
+    if (/^\/nodes\/[^/]+\/network$/.test(p)) return send(res, cluster.networks ?? [{ iface: 'vmbr0', active: 1 }]);
+    if (p === '/nodes') return cluster.inventoryDenied ? send(res, null, 403, 'Permission denied') : send(res, cluster.nodes ?? [{ node: 'pve1', status: 'online' }]);
     if (/^\/nodes\/[^/]+\/storage$/.test(p)) {
+      const node = decodeURIComponent(p.split('/')[2]);
+      if (cluster.storageInventories && node in cluster.storageInventories) {
+        const inventory = cluster.storageInventories[node];
+        return inventory === null ? send(res, null, 403, 'Permission denied') : send(res, inventory);
+      }
       if (u.searchParams.get('content') === 'vztmpl') return send(res, [{ storage: 'local', type: 'dir', content: 'vztmpl,iso,backup', active: 1, shared: 0 }]);
       if (u.searchParams.get('content') === 'rootdir') return send(res, [{ storage: 'local-lvm', type: 'lvmthin', content: 'rootdir,images', active: 1 }, { storage: 'VMStorage', type: 'zfspool', content: 'rootdir,images', active: 1 }]);
       if (u.searchParams.get('content') === 'backup') return send(res, [{ storage: 'pbs', type: 'pbs', content: 'backup', active: 1 }, { storage: 'local', type: 'dir', content: 'backup,iso,vztmpl', active: 1 }]);
@@ -219,13 +249,15 @@ export async function startMockPve({ port = 0 } = {}) {
       if (!vm) return send(res, null, 500, `unable to find VM ${vmid}`);
       if (!['pbs', 'local'].includes(b.storage)) return send(res, null, 500, `storage '${b.storage}' does not exist`);
       log('VZDUMP', vmid, JSON.stringify(b));
-      return send(res, task('vzdump', vmid, 1200, () => {
+      const upid = task('vzdump', vmid, 1200, () => {
         const ctime = Math.max(Math.floor(Date.now() / 1000), lastCtime + 1); lastCtime = ctime;
         const stamp = new Date(ctime * 1000).toISOString().replace(/\.\d+Z$/, 'Z');
         const volid = b.storage === 'pbs' ? `pbs:backup/vm/${vmid}/${stamp}` : `local:backup/vzdump-qemu-${vmid}-${stamp.replace(/[-:]/g, '_')}.vma.zst`;
         backups.set(volid, { volid, storage: b.storage, vmid, ctime, size: 1_234_567_890, notes: String(b['notes-template'] ?? '').replace('{{guestname}}', vm.name),
           protected: 0, cfg: JSON.parse(JSON.stringify(vm.cfg)), fwRules: JSON.parse(JSON.stringify(vm.fwRules ?? [])), fwOptions: { ...(vm.fwOptions ?? {}) } });
-      }));
+      });
+      if (cluster.loseBackupResponse) {cluster.loseBackupResponse=false;return res.destroy();}
+      return send(res,upid);
     }
     if (/^\/nodes\/[^/]+\/vzdump\/extractconfig$/.test(p)) {
       const bk = backups.get(u.searchParams.get('volume')); if (!bk) return send(res, null, 500, 'volume does not exist');
@@ -271,7 +303,9 @@ export async function startMockPve({ port = 0 } = {}) {
         if (vm.status !== 'stopped') return send(res, null, 500, `unable to restore CT ${vmid} - CT is running`);
         vm.lock = 'create';
         return send(res, task('vzrestore', vmid, 1500, () => {
-          vm.cfg = JSON.parse(JSON.stringify(bk.cfg)); vm.fwRules = JSON.parse(JSON.stringify(bk.fwRules)); vm.fwOptions = { ...bk.fwOptions };
+          vm.cfg = JSON.parse(JSON.stringify(bk.cfg));
+        if(b.storage) for(const k of Object.keys(vm.cfg)) if (/^((scsi|sata|virtio|ide)\d+|efidisk0|tpmstate0)$/.test(k) && !/media=cdrom/.test(String(vm.cfg[k]))) vm.cfg[k]=String(vm.cfg[k]).replace(/^[^:]+:/,`${b.storage}:`);
+        vm.fwRules = JSON.parse(JSON.stringify(bk.fwRules)); vm.fwOptions = { ...bk.fwOptions };
           vm.restoredFrom = bk.volid; vm.restoreStorage = b.storage; delete vm.lock;
         }));
       }
@@ -294,10 +328,14 @@ export async function startMockPve({ port = 0 } = {}) {
       if (vm.status !== 'stopped') return send(res, null, 500, `unable to restore VM ${vmid} - VM is running`);
       log('RESTORE', vmid, b.archive);
       vm.lock = 'create';
-      return send(res, task('qmrestore', vmid, 1500, () => {
-        vm.cfg = JSON.parse(JSON.stringify(bk.cfg)); vm.fwRules = JSON.parse(JSON.stringify(bk.fwRules)); vm.fwOptions = { ...bk.fwOptions };
+      const upid=task('qmrestore', vmid, cluster.restoreDelay ?? 1500, () => {
+        vm.cfg = JSON.parse(JSON.stringify(bk.cfg));
+        if(b.storage) for(const k of Object.keys(vm.cfg)) if (/^((scsi|sata|virtio|ide)\d+|efidisk0|tpmstate0)$/.test(k) && !/media=cdrom/.test(String(vm.cfg[k]))) vm.cfg[k]=String(vm.cfg[k]).replace(/^[^:]+:/,`${b.storage}:`);
+        vm.fwRules = JSON.parse(JSON.stringify(bk.fwRules)); vm.fwOptions = { ...bk.fwOptions };
         vm.maxcpu = Number(vm.cfg.cores) || 1; vm.maxmem = (Number(vm.cfg.memory) || 512) * 2 ** 20; vm.restoredFrom = bk.volid; delete vm.lock;
-      }));
+      });
+      if (cluster.loseRestoreResponse) {cluster.loseRestoreResponse=false;return res.destroy();}
+      return send(res,upid);
     }
     if (p === '/cluster/sdn/zones' && req.method==='GET') return send(res, sdn.zones);
     if (p === '/cluster/sdn/zones' && req.method==='POST') { const b = await body(req); log('SDN ZONE', JSON.stringify(b)); sdn.zones.push({zone:b.zone,type:b.type,dhcp:b.dhcp}); sdn.pending++; return send(res,null); }
@@ -326,7 +364,7 @@ export async function startMockPve({ port = 0 } = {}) {
         return send(res, vm.status !== 'running' ? null : [{ name: 'lo', inet: '127.0.0.1/8' }, { name: 'eth0', hwaddr: /hwaddr=([^,]+)/.exec(vm.cfg.net0)?.[1], inet: `${n ? `10.100.${n}` : '192.168.1'}.123/24` }]);
       }
       if (rest === '/resize' && req.method === 'PUT') { const b = await body(req); log('CT RESIZE', vmid, JSON.stringify(b));
-        vm.cfg.rootfs = vm.cfg.rootfs.replace(/size=[^,]+/, `size=${b.size}`); vm.maxdisk = parseInt(b.size) * 2 ** 30; return send(res, task('resize', vmid, 500)); }
+        vm.cfg.rootfs = vm.cfg.rootfs.replace(/size=[^,]+/, `size=${b.size}`); vm.maxdisk = parseInt(b.size) * 2 ** 30; return send(res, task('resize', vmid, cluster.resizeDelay ?? 500)); }
       if (rest === '/config' && req.method === 'PUT') { const b = await body(req);
         if ('sockets' in b) return send(res, null, 400, 'property is not defined in schema and the schema does not allow additional properties: sockets');
         Object.assign(vm.cfg, b); if (b.cores) vm.maxcpu = Number(b.cores); if (b.memory) vm.maxmem = Number(b.memory) * 2 ** 20; log('CT CONFIG', vmid, JSON.stringify(b)); return send(res, null); }
@@ -335,15 +373,29 @@ export async function startMockPve({ port = 0 } = {}) {
     if (!vm) return send(res, null, 500, `Configuration file 'nodes/pve1/qemu-server/${vmid}.conf' does not exist`);
     if (rest === '' && req.method === 'DELETE') { destroyed.push(`DELETE ${vmid} ${u.search}`); log('DESTROY', vmid, u.search);
       if (vm.status !== 'stopped') return send(res, null, 500, 'VM is running'); return send(res, task('qmdestroy', vmid, 1000, () => vms.delete(vmid))); }
+    if (rest === '/migrate' && req.method === 'POST') {
+      const b = await body(req); log('MIGRATE', vmid, JSON.stringify(b));
+      if (vm.status !== 'stopped') return send(res,null,409,'VM must be stopped');
+      vm.lock='migrate';
+      const upid=task('qmigrate',vmid,cluster.migrationDelay ?? 2000,()=>{
+        vm.node=b.target;delete vm.lock;
+        for (const k of Object.keys(vm.cfg)) if (/^((scsi|sata|virtio|ide)\d+|efidisk0|tpmstate0)$/.test(k) && !String(vm.cfg[k]).startsWith('none')) vm.cfg[k]=String(vm.cfg[k]).replace(/^[^:]+:/,`${b.targetstorage}:`);
+      });
+      if (cluster.loseMigrationResponse) { cluster.loseMigrationResponse=false;return res.destroy(); }
+      return send(res,upid);
+    }
     if (rest === '/clone' && req.method === 'POST') { const b = await body(req); log('CLONE', vmid, JSON.stringify(b));
       const id = Number(b.newid); if (vms.has(id)) return send(res,null,500,`VM ${id} already exists`);
-      vms.set(id, { origin: vmid, vmid:id, node:'pve1', type:'qemu', name:b.name, pool:b.pool, status:'stopped', lock:'clone', maxcpu:vm.maxcpu, maxmem:vm.maxmem, maxdisk:vm.maxdisk, cfg:{...vm.cfg, scsi0: vm.cfg.scsi0.replace(`base-${vmid}`, `vm-${id}`), net0: vm.cfg.net0 ? vm.cfg.net0.replace(/=[0-9A-Fa-f:]{17}/, '').replace(/^(\w+)/, `$1=${newMac()}`) : `virtio=${newMac()},bridge=vmbr0`} });
+      vms.set(id, { origin: vmid, vmid:id, node:b.target || vm.node, type:'qemu', name:b.name, pool:b.pool, status:'stopped', lock:'clone', maxcpu:vm.maxcpu, maxmem:vm.maxmem, maxdisk:vm.maxdisk, cfg:{...vm.cfg, ...(b.description ? {description:b.description} : {}), scsi0: vm.cfg.scsi0.replace(`base-${vmid}`, `vm-${id}`).replace(/^[^:]+:/, `${b.storage || vm.cfg.scsi0.split(':')[0]}:`), net0: vm.cfg.net0 ? vm.cfg.net0.replace(/=[0-9A-Fa-f:]{17}/, '').replace(/^(\w+)/, `$1=${newMac()}`) : `virtio=${newMac()},bridge=vmbr0`} });
       if (vms.get(id).cfg.net0 && !/=/.test(vms.get(id).cfg.net0.split(',')[0])) vms.get(id).cfg.net0 = withMac(vms.get(id).cfg.net0);
-      return send(res, task('qmclone', vmid, 2500, () => { delete vms.get(id).lock; })); }
-    if (rest === '/config' && req.method === 'GET') return send(res, vm.cfg);
+      const upid = task('qmclone', vmid, cluster.cloneDelay ?? 2500, () => { if (vms.has(id)) delete vms.get(id).lock; });
+      if (cluster.loseCloneResponse) { cluster.loseCloneResponse = false; return res.destroy(); }
+      return send(res, upid); }
+    if (rest === '/config' && req.method === 'GET') return send(res, {...vm.cfg, ...(vm.lock ? {lock:vm.lock} : {})});
     if (rest === '/config' && req.method === 'PUT') { const b = await body(req); if (b.net0) b.net0 = withMac(b.net0); log('CONFIG', vmid, JSON.stringify(b));
       const hot = vm.status === 'running';
       for (const k of ['cores', 'memory', 'sockets']) if (b[k] !== undefined && hot && String(vm.cfg[k] ?? '') !== String(b[k])) (vm.pending ??= {})[k] = b[k];
+      if (b.delete) { for (const key of b.delete.split(',')) delete vm.cfg[key];delete b.delete; }
       Object.assign(vm.cfg, b);
       if (!hot) { if (b.cores) vm.maxcpu = Number(b.cores); if (b.memory) vm.maxmem = Number(b.memory)*2**20; }
       return send(res, null); }
@@ -351,7 +403,7 @@ export async function startMockPve({ port = 0 } = {}) {
       return send(res, Object.keys(vm.cfg).map((k) => ({ key: k, value: vm.pending?.[k] !== undefined ? undefined : vm.cfg[k], ...(vm.pending?.[k] !== undefined ? { value: String(k === 'cores' ? vm.maxcpu : Math.round(vm.maxmem / 2**20)), pending: vm.pending[k] } : {}) })));
     }
     if (rest === '/resize' && req.method === 'PUT') { const b = await body(req); log('RESIZE', vmid, JSON.stringify(b));
-      vm.cfg[b.disk] = vm.cfg[b.disk].replace(/size=[^,]+/, `size=${b.size}`); vm.maxdisk = parseInt(b.size)*2**30; return send(res, task('resize', vmid, 500)); }
+      vm.cfg[b.disk] = vm.cfg[b.disk].replace(/size=[^,]+/, `size=${b.size}`); vm.maxdisk = parseInt(b.size)*2**30; return send(res, task('resize', vmid, cluster.resizeDelay ?? 500)); }
     const pw = rest.match(/^\/status\/(start|stop|shutdown|reboot)$/);
     if (pw) { const a = pw[1]; log('POWER', vmid, a); return send(res, task(`qm${a}`, vmid, 800, () => {
       vm.status = (a==='start'||a==='reboot')?'running':'stopped'; if (a==='start'||a==='reboot') started.set(vmid, Date.now());

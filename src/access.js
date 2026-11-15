@@ -231,7 +231,7 @@ export function routeAction(req) {
     'GET /api/vms/:vmid/backups/files': 'backup.files', 'GET /api/vms/:vmid/backups/download': 'backup.files',
     'PUT /api/vms/:vmid/backups/schedule': 'backup.schedule',
     'GET /api/vms/:vmid/updates': 'updates.read', 'POST /api/vms/:vmid/updates': 'updates.run',
-    'POST /api/vms/:vmid/resize': 'resize', 'POST /api/vms/:vmid/reinstall': 'reinstall',
+    'POST /api/vms/:vmid/ha': 'power', 'POST /api/vms/:vmid/resize': 'resize', 'POST /api/vms/:vmid/reinstall': 'reinstall',
     'DELETE /api/vms/:vmid': 'delete', 'POST /api/vms/:vmid/extend': 'extend',
     'GET /api/vms/:vmid/tailscale': 'tailscale.read', 'POST /api/vms/:vmid/tailscale': 'tailscale.manage',
     'DELETE /api/vms/:vmid/tailscale': 'tailscale.manage',

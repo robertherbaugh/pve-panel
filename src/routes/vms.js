@@ -1,3 +1,6 @@
+import { catalogPower, setCustomerHa } from '../compute-ha.js';
+import { backupUsage } from '../compute-backups.js';
+import { computeManaged, assertComputeIdle, allocationFor } from '../compute-state.js';
 import { Readable } from 'node:stream';
 import { db, audit } from '../db.js';
 import { config } from '../config.js';
@@ -8,6 +11,8 @@ import {
 import {
   limitsOf, usageOf, offeredTemplates, createServer, deleteServer, reinstallServer, resizeServer,
 } from '../provision.js';
+import { customerOfferings } from '../compute-placement.js';
+import { allocationHistory } from '../compute-state.js';
 import { requireCustomer, customerContext } from '../tenancy.js';
 import { customerUsage } from '../provision.js';
 import { networkOf } from '../network.js';
@@ -107,6 +112,7 @@ function summarize(row, guest) {
     progress: row.state === 'creating' ? row.progress : null,
     deletable: !!row.created_by_customer,
     reinstallable: !!row.created_by_customer,
+    catalogManaged: computeManaged(row.vmid),
     expiry: expiryInfo(row, expirySettings()),
     name: row.label || guest?.name || (row.spec && JSON.parse(row.spec).hostname) || `Server ${row.vmid}`,
     hostname: guest?.name ?? null,
@@ -144,6 +150,7 @@ export default async function vmRoutes(app) {
   app.addHook('preHandler', async (req) => {
     if (req.params.vmid === undefined) return;
     req.accessRow = await authorizedRow(req, Number(req.params.vmid), routeAction(req));
+    if (!['GET', 'HEAD'].includes(req.method)) assertComputeIdle(Number(req.params.vmid));
     if (req.accessRow.access_managed && routeAction(req) === 'resize') {
       const spec = JSON.parse(req.accessRow.spec ?? '{}');
       req.account = withLimits(req.account, cloneRule(req, spec.accessRuleId));
@@ -183,9 +190,10 @@ export default async function vmRoutes(app) {
     // Version number only; commit, build date and update status stay admin-only.
     const panelVersion = config.showVersionToCustomers ? versionInfo.version : null;
     const backups = backupsAvailableFor(a.id,customer?.id);
-    if (!a.can_create) return { customer:context, canCreate: false, network, vpn, tailscale, panelVersion, backups, authorization, cloneDestinations: [] };
+    const offerings = customer ? customerOfferings(customer.id) : null;
+    if (!a.can_create) return { customer:context, canCreate: false, offerings, network, vpn, tailscale, panelVersion, backups, authorization, cloneDestinations: [] };
     return {
-      customer:context, canCreate: true,
+      customer:context, canCreate: true, offerings,
       personalCreation: !!req.account.can_create,
       limits: limitsOf(a),
       usage: await usageOf(a.id,customer?.id),
@@ -200,6 +208,10 @@ export default async function vmRoutes(app) {
     };
   });
 
+  app.get('/api/compute-offerings', async req => customerOfferings(requireCustomer(req).id));
+  app.get('/api/compute-backup-usage', async req => backupUsage(requireCustomer(req).id));
+  app.get('/api/compute-allocations', async req => ({ events: allocationHistory(requireCustomer(req).id) }));
+
   app.get('/api/templates', async (req, reply) => {
     const grants = cloneRules(req);
     if (!req.account.can_create && !grants.length) return reply.code(403).send({ error: 'Creating servers is not enabled for your account' });
@@ -212,11 +224,14 @@ export default async function vmRoutes(app) {
     schema: {
       body: {
         type: 'object',
-        required: ['hostname', 'templateId', 'cores', 'memoryMb', 'diskGb'],
+        required: ['hostname', 'templateId', 'diskGb'],
         additionalProperties: false,
         properties: {
           hostname: { type: 'string', pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' },
           templateId: TEMPLATE_ID,
+          sizeId: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,63}$' },
+          storageClassId: { type: 'string', enum: ['basic', 'standard', 'fast'] },
+          haEnabled: { type: 'boolean' },
           accessRuleId: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,63}$' },
           cores: { type: 'integer', minimum: 1, maximum: 128 },
           memoryMb: { type: 'integer', minimum: 512, maximum: 1048576 },
@@ -224,6 +239,8 @@ export default async function vmRoutes(app) {
           username: { type: 'string', pattern: '^[a-z_][a-z0-9_-]{0,31}$' },
           password: { type: 'string', minLength: 12, maxLength: 200 },
           sshKeys: { type: 'string', maxLength: 16000 },
+          sshKeyIds: { type: 'array', maxItems:20, uniqueItems:true, items:{type:'string',pattern:'^[0-9a-f-]{36}$'} },
+          loginMethod: {type:'string',enum:['ssh','password','both']},
         },
       },
     },
@@ -247,6 +264,8 @@ export default async function vmRoutes(app) {
           username: { type: 'string', pattern: '^[a-z_][a-z0-9_-]{0,31}$' },
           password: { type: 'string', minLength: 12, maxLength: 200 },
           sshKeys: { type: 'string', maxLength: 16000 },
+          sshKeyIds: { type: 'array', maxItems:20, uniqueItems:true, items:{type:'string',pattern:'^[0-9a-f-]{36}$'} },
+          loginMethod: {type:'string',enum:['ssh','password','both']},
         },
       },
     },
@@ -308,6 +327,7 @@ export default async function vmRoutes(app) {
           memoryMb: { type: 'integer', minimum: 512, maximum: 1024 * 1024 },
           diskGb: { type: 'integer', minimum: 1, maximum: 64 * 1024 },
           restart: { type: 'boolean' },
+          sizeId: {type:'string',maxLength:64},
         },
       },
     },
@@ -474,6 +494,7 @@ export default async function vmRoutes(app) {
     return {
       ...summarize(row, { ...guest, ...status, maxcpu: status.cpus ?? guest.maxcpu }),
       permissions,
+      offering: allocationFor(row.vmid)?.offering ?? null,
       resizeLimits: row.access_managed && permissions.includes('resize')
         ? cloneRules(req).find((r) => r.id === JSON.parse(row.spec ?? '{}').accessRuleId)?.clone.limits ?? null : null,
       deletable: !!row.created_by_customer && permissions.includes('delete'),
@@ -495,6 +516,8 @@ export default async function vmRoutes(app) {
     };
   });
 
+  app.post('/api/vms/:vmid/ha',{schema:{body:{type:'object',additionalProperties:false,required:['enabled'],properties:{enabled:{type:'boolean'},policyRevision:{type:'integer',minimum:0},slaVersion:{type:'string',maxLength:100},msaVersion:{type:'string',maxLength:100},accept:{type:'boolean'}}}}},async(req,reply)=>reply.code(202).send(await setCustomerHa(req,req.accessRow,req.body)));
+
   // Power actions
   app.post('/api/vms/:vmid/power/:action', {
     config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
@@ -507,7 +530,8 @@ export default async function vmRoutes(app) {
     if (row.expired_at && ['start', 'reboot'].includes(action)) {
       return reply.code(403).send({ error: 'This server has expired. Extend it to use it again.' });
     }
-    const upid = await pve.post(`${path}/status/${action}`);
+    const ha=await catalogPower(req,row,guest,action);
+    const upid = ha ? ha.upid : await pve.post(`${path}/status/${action}`);
     return recordTask(req, guest, upid, `power_${action}`);
   });
 

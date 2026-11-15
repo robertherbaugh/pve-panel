@@ -168,6 +168,7 @@ test('administrator edits mappings; customer chooses a destination and sees perm
   await page.locator('#clone-destination').selectOption('production');
   await expect(page.locator('[name=cores]')).toHaveAttribute('max', '4');
   await page.locator('[name=hostname]').fill('browser-clone');
+  await page.locator('[name=loginMethod]').selectOption('ssh');
   await page.locator('[name=sshKeys]').fill('ssh-ed25519 AAAA-test');
   const request = page.waitForRequest((r) => r.url() === `${stack.customerUrl}/api/vms` && r.method() === 'POST');
   await page.locator('#create-submit').click();

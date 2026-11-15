@@ -228,7 +228,11 @@ export function customerDeletionPlan(id) {
   if (!customer) throw error('Customer not found', 404);
   const count = (table, condition = '') =>
     db.prepare(`SELECT count(*) AS n FROM ${table} WHERE customer_id=? ${condition}`).get(id).n;
+  const optionalCount = (table, condition) => db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table) ? count(table, condition) : 0;
   const blockers = [
+    ['Compute operations', optionalCount('compute_operations', "AND state NOT IN ('complete','cancelled')")],
+    ['Compute allocations', optionalCount('compute_allocations', 'AND ended_at IS NULL')],
+    ['Reserved backup storage', optionalCount('compute_backup_reservations', "AND state!='released'")],
     ['Assigned VMs', count('vms')],
     ['Private networks', count('networks')],
     ['VPN devices', count('vpn_devices')],
