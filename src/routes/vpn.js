@@ -1,11 +1,12 @@
+import { requireCustomer } from '../tenancy.js';
 import { listDevices, addDevice, removeDevice, vpnInfoFor } from '../vpn.js';
 
 export default async function vpnRoutes(app) {
   app.addHook('preHandler', app.authenticate);
 
   app.get('/api/vpn', async (req) => ({
-    ...vpnInfoFor(req.account.id),
-    devices: vpnInfoFor(req.account.id).enabled ? await listDevices(req.account.id) : [],
+    ...vpnInfoFor(req.account.id,requireCustomer(req).id),
+    devices: vpnInfoFor(req.account.id,requireCustomer(req).id).enabled ? await listDevices(req.account.id,requireCustomer(req).id) : [],
   }));
 
   app.post('/api/vpn/devices', {

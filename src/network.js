@@ -10,13 +10,14 @@
 // and an IP filter pins each server to its own subnet (no spoofing).
 
 import { db } from './db.js';
+import { personalCustomerId,customerById } from './tenancy.js';
 import { config } from './config.js';
 import { pve, waitTask, serial, locateGuest, guestPath, clusterGuests } from './pve.js';
 
 const { zone, prefix, dns } = config.network;
 const ALL_CUSTOMERS = `${prefix}.0.0/16`;
 
-const byUser = db.prepare('SELECT * FROM networks WHERE user_id = ?');
+const byCustomer = db.prepare('SELECT * FROM networks WHERE customer_id = ?');
 
 function describe(row) {
   const base = `${prefix}.${row.idx}`;
@@ -31,16 +32,16 @@ function describe(row) {
 }
 
 /** The customer's network, or null if they don't have one yet. */
-export function networkOf(userId) {
+export function networkOf(userId, customerId=personalCustomerId(userId)) {
   if (!config.network.enabled) return null;
-  const row = byUser.get(userId);
+  const row = byCustomer.get(customerId);
   return row ? describe(row) : null;
 }
 
 export function allNetworks() {
   return db.prepare(`
-    SELECT n.*, u.email FROM networks n LEFT JOIN users u ON u.id = n.user_id ORDER BY n.idx
-  `).all().map((row) => ({ ...describe(row), email: row.email ?? null, userId: row.user_id }));
+    SELECT n.*,COALESCE(c.name,u.email) AS email,c.name AS customerName FROM networks n LEFT JOIN users u ON u.id=n.user_id LEFT JOIN customers c ON c.id=n.customer_id ORDER BY n.idx
+  `).all().map((row) => ({ ...describe(row), email: row.email ?? null, userId: row.user_id,customerId:row.customer_id,customerName:row.customerName }));
 }
 
 async function ensureZone() {
@@ -53,13 +54,13 @@ async function ensureZone() {
  * Returns the customer's network, creating the VNet + subnet and applying the
  * SDN configuration the first time. Safe to retry after a partial failure.
  */
-export async function ensureNetwork(userId) {
-  const existing = byUser.get(userId);
+export async function ensureNetwork(userId,customerId=personalCustomerId(userId)) {
+  const existing = byCustomer.get(customerId);
   if (existing) return describe(existing);
 
   // SDN changes are applied cluster-wide in one go; never run two at once.
   return serial(async () => {
-    const again = byUser.get(userId);
+    const again = byCustomer.get(customerId);
     if (again) return describe(again);
 
     await ensureZone();
@@ -73,7 +74,7 @@ export async function ensureNetwork(userId) {
 
     const vnets = await pve.get('/cluster/sdn/vnets');
     if (!vnets.some((v) => v.vnet === net.vnet)) {
-      await pve.post('/cluster/sdn/vnets', { vnet: net.vnet, zone, alias: vnetAlias(userId) });
+      await pve.post('/cluster/sdn/vnets', { vnet: net.vnet, zone, alias: (customerById(customerId)?.legacy ? vnetAlias(userId) : customerById(customerId)?.name) ?? vnetAlias(userId) });
     }
     const subnets = await pve.get(`/cluster/sdn/vnets/${net.vnet}/subnets`);
     if (!subnets.some((sn) => sn.cidr === net.subnet || String(sn.subnet ?? '').endsWith(net.subnet.replace('/', '-')))) {
@@ -90,7 +91,7 @@ export async function ensureNetwork(userId) {
     // Apply pending SDN changes (creates the bridge, gateway, NAT and DHCP).
     await waitTask(null, await pve.put('/cluster/sdn'));
 
-    db.prepare('INSERT INTO networks (vnet, user_id, idx) VALUES (?, ?, ?)').run(net.vnet, userId, idx);
+    db.prepare('INSERT INTO networks (vnet, user_id, idx, customer_id) VALUES (?, ?, ?, ?)').run(net.vnet, userId, idx,customerId);
     return net;
   });
 }
@@ -238,13 +239,13 @@ export async function ensureEgressRules(path, net) {
 export async function reapplyIsolation(log) {
   if (!config.network.enabled) return;
   const rows = db.prepare(`
-    SELECT v.vmid, v.user_id FROM vms v
-    JOIN networks n ON n.user_id = v.user_id
+    SELECT v.vmid, v.user_id,v.customer_id FROM vms v
+    JOIN networks n ON n.customer_id = v.customer_id
     WHERE v.created_by_customer = 1 AND v.state = 'ready'
   `).all();
   let updated = 0;
   for (const row of rows) {
-    const net = networkOf(row.user_id);
+    const net = networkOf(row.user_id,row.customer_id);
     const guest = await locateGuest(row.vmid).catch(() => null);
     if (!net || !guest) continue;
     try {
@@ -285,8 +286,8 @@ export async function guestsUsingVnet(vnet) {
   return using;
 }
 
-export async function removeNetwork(userId) {
-  const row = byUser.get(userId);
+export async function removeNetwork(userId,customerId=personalCustomerId(userId)) {
+  const row = byCustomer.get(customerId);
   if (!row) return false;
   return serial(async () => {
     const vnets = await pve.get('/cluster/sdn/vnets');
@@ -334,7 +335,7 @@ export async function syncVnetAliases(log) {
   await serial(async () => {
     for (const row of rows) {
       const current = vnets.get(row.vnet);
-      const alias = vnetAlias(row.user_id);
+      const alias = (customerById(row.customer_id)?.legacy ? vnetAlias(row.user_id) : customerById(row.customer_id)?.name) ?? vnetAlias(row.user_id);
       if (!current || current.alias === alias) continue;
       await pve.put(`/cluster/sdn/vnets/${row.vnet}`, { alias });
       changed += 1;

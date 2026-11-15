@@ -1,4 +1,4 @@
-> Fork extension: [OIDC group and application-entitlement access policies](docs/access-policies.md)
+> Fork extensions: [Customer tenancy and membership](docs/customer-tenancy.md) · [OIDC group and application-entitlement access policies](docs/access-policies.md)
 > add shared VM access and controlled cloning. Disabled by default; review the
 > ownership boundaries and rollback requirements before deploying.
 

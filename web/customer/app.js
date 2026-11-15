@@ -8,6 +8,8 @@ import { signInSecondStep, renderSecurity } from '/shared/twofa.js';
 import { prepareSignIn, resumeSso } from '/shared/signin.js';
 import { renderPasskeys } from '/shared/passkeys.js';
 
+import { manageCustomerMembers } from './customer-members.js';
+
 const brandReady = applyBrand();
 document.querySelectorAll('[data-brand-mark]').forEach((el) => { el.innerHTML = brandMark(32); });
 
@@ -112,7 +114,12 @@ $('#logout').addEventListener('click', async () => {
 
 // ---------- server list ----------------------------------------------------
 async function loadList() {
-  [state.vms, state.account] = await Promise.all([api('/api/vms'), api('/api/account')]);
+  let contexts;
+  [state.vms, state.account,contexts] = await Promise.all([api('/api/vms'), api('/api/account'),api('/api/customers')]);
+  const selector=$('#customer-context');
+  if(document.activeElement!==selector) selector.innerHTML=`${contexts.selectedCustomerId?'':'<option value="">Select a customer</option>'}${contexts.customers.map(c=>`<option value="${c.id}" ${c.id===contexts.selectedCustomerId?'selected':''}>${esc(c.name)}</option>`).join('')}`;
+  selector.disabled=!contexts.customers.length;
+  $('#customer-role').textContent=state.account.customer?.role??'No active membership';
   let banner = $('#authorization-notice');
   if (!banner) {
     banner = document.createElement('div');
@@ -124,6 +131,11 @@ async function loadList() {
   banner.innerHTML = banner.hidden ? '' : '<p>Your shared access needs a fresh sign-in. <a href="/api/auth/oidc/start">Sign in again</a> to refresh your permissions.</p>';
   renderList();
 }
+
+$('#customer-context').addEventListener('change',async e=>{
+  const customerId=Number(e.target.value);if(!customerId)return;e.target.disabled=true;
+  try{await api('/api/customers/select',{method:'POST',body:{customerId}});location.replace(location.pathname);}catch(err){e.target.disabled=false;fail(err);}
+});
 
 const STATE_TEXT = { creating: 'Setting up…', deleting: 'Deleting…', failed: 'Setup failed' };
 
@@ -141,10 +153,12 @@ function renderList() {
     `<button class="nav-item" id="nav-overview" aria-current="${state.view === 'overview'}">${icon('overview')}<span>Overview</span></button>`,
     state.account.canCreate
       ? `<button class="nav-item" id="new-server" aria-current="${state.view === 'create'}">${icon('plus')}<span>New server</span></button>` : '',
+    state.account.customer?.role==='admin' ? `<button class="nav-item" id="customer-members">${icon('users')}<span>Customer members</span></button>` : '',
     state.account.vpn?.enabled
       ? `<button class="nav-item" id="vpn-access" aria-current="${state.view === 'vpn'}">${icon('shield')}<span>VPN access</span></button>` : '',
   ].join('');
 
+  $('#customer-members')?.addEventListener('click',()=>manageCustomerMembers({api,esc,toast,fail,confirmAction}));
   $('#vm-count').textContent = state.vms.length ? String(state.vms.length) : '';
   $('#vm-list').innerHTML = state.vms.length ? state.vms.map((vm) => `
       <li>

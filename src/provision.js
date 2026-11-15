@@ -1,5 +1,7 @@
 import { db, audit } from './db.js';
 import { config } from './config.js';
+import { capacityLocks,capacityBusy } from './capacity.js';
+import { customerById, requireCustomer } from './tenancy.js';
 import {
   pve, clusterGuests, locateTemplate, waitTask, bootDiskKey, diskSizeGb, serial,
   invalidateGuestCache, guestPath,
@@ -11,7 +13,7 @@ import { expiryForNewServer } from './expiry.js';
 import { activeRun } from './winupdate.js';
 import { forgetServerBackups } from './backups.js';
 import { offeredContainerTemplates, containerRow, containerParams, containerMac } from './containers.js';
-import { cloneRule, cloneRules, withLimits } from './access.js';
+import { cloneRule, cloneRules, withLimits, customerHasGuest, poolMembers } from './access.js';
 
 const MB = 1024 ** 2;
 const GB = 1024 ** 3;
@@ -45,8 +47,22 @@ export function diskTotalGb(cfg) {
  * servers can't exceed the plan. Servers still being created count with what
  * was requested.
  */
-export async function usageOf(userId) {
-  const rows = db.prepare('SELECT vmid, state, spec FROM vms WHERE user_id = ?').all(userId);
+const customerContextForUsage=(userId,id)=>customerById(id)?.legacy_user_id===userId;
+export async function usageOf(userId, customerId=null) {
+  const rows = customerId!=null&&customerContextForUsage(userId,customerId) ? db.prepare('SELECT * FROM vms WHERE customer_id=?').all(customerId) : customerId==null ? db.prepare('SELECT * FROM vms WHERE user_id=?').all(userId) : db.prepare('SELECT * FROM vms WHERE user_id=? AND customer_id=?').all(userId,customerId);
+  return usageRows(rows);
+}
+export async function customerUsage(customer) {
+  const rows=db.prepare('SELECT * FROM vms WHERE customer_id=?').all(customer.id);
+  const known=new Set(rows.map(r=>r.vmid));
+  if(customer.pools.length) for(const guest of (await clusterGuests()).values()) {
+    if(known.has(Number(guest.vmid))) continue;
+    const row=db.prepare('SELECT * FROM vms WHERE vmid=?').get(Number(guest.vmid));
+    if(await customerHasGuest(customer,guest,row)) rows.push({vmid:Number(guest.vmid),state:'ready',spec:null});
+  }
+  return usageRows(rows);
+}
+async function usageRows(rows) {
   const guests = await clusterGuests();
   const usage = { servers: 0, cores: 0, memoryMb: 0, diskGb: 0 };
   await Promise.all(rows.map(async (row) => {
@@ -105,7 +121,7 @@ export async function offeredTemplates() {
 
 // ---- Create -----------------------------------------------------------------
 
-const creatingFor = new Set(); // one creation per customer at a time
+const creatingFor = capacityLocks; // one creation per customer at a time
 
 export class ProvisionError extends Error {
   constructor(status, message) {
@@ -146,6 +162,8 @@ function applySetupRules(spec, offered) {
  * background, tracked through the `state` column.
  */
 export async function createServer(req, spec) {
+  const customer=requireCustomer(req);
+  const capacityKey=`customer:${customer.id}`;
   let grant = null;
   if (spec.accessRuleId) grant = cloneRule(req, spec.accessRuleId);
   else if (!req.account.can_create) {
@@ -155,10 +173,10 @@ export async function createServer(req, spec) {
   }
   const account = grant ? withLimits(req.account, grant) : req.account;
   if (!account.can_create) throw new ProvisionError(403, 'Creating servers is not enabled for your account');
-  if (creatingFor.has(account.id)) {
+  if (capacityBusy(customer.id)) {
     throw new ProvisionError(409, 'Another server is being created. Wait until it has finished.');
   }
-  creatingFor.add(account.id);
+  creatingFor.add(capacityKey);
 
   let background = false;
   try {
@@ -189,7 +207,7 @@ export async function createServer(req, spec) {
 
     // Quota
     const limits = limitsOf(account);
-    const usage = await usageOf(account.id);
+    const usage = await usageOf(account.id,customer.id);
     const over = [];
     if (usage.servers + 1 > limits.servers) over.push(`servers (${limits.servers} allowed)`);
     if (usage.cores + spec.cores > limits.cores) over.push(`CPU cores (${limits.cores - usage.cores} left)`);
@@ -199,8 +217,12 @@ export async function createServer(req, spec) {
     if (usage.diskGb + spec.diskGb > limits.diskGb) over.push(`disk (${limits.diskGb - usage.diskGb} GB left)`);
     if (over.length) throw new ProvisionError(409, `This exceeds your plan: ${over.join(', ')}`);
 
+    const total=await customerUsage(customer);
+    const exceeded=Object.entries(customer.limits).some(([key,limit])=>limit>0&&total[key]+({servers:1,cores:spec.cores,memoryMb:spec.memoryMb,diskGb:spec.diskGb}[key])>limit);
+    if(exceeded) throw new ProvisionError(409,'This exceeds the customer’s shared resource limits');
+
     // The customer's private network (created with their first server)
-    const net = config.network.enabled ? await ensureNetwork(account.id) : null;
+    const net = config.network.enabled ? await ensureNetwork(account.id,customer.id) : null;
 
     // Reserve ID + start clone, serialised against other creations
     const { vmid, upid } = await serial(async () => {
@@ -218,6 +240,8 @@ export async function createServer(req, spec) {
           // taken in Proxmox, try the next one
         }
       }
+      const currentCustomer=requireCustomer(req);
+      if(currentCustomer.id!==customer.id || currentCustomer.revision!==customer.revision) throw new ProvisionError(409,'Customer settings changed. Please try again.');
       if (grant) {
         // Re-evaluate after asynchronous quota/ID work. A policy edit or expired
         // claim lease must not authorize a late clone with an old rule snapshot.
@@ -238,25 +262,25 @@ export async function createServer(req, spec) {
 
     const templateRef = isContainer ? spec.templateId : tpl.vmid;
     db.prepare(`
-      INSERT INTO vms (vmid, user_id, type, label, state, created_by_customer, spec, progress, expires_at, expiry_set_at, access_managed)
-      VALUES (?, ?, ?, NULL, 'creating', 1, ?, ?, ?, ?, ?)
+      INSERT INTO vms (vmid, user_id, type, label, state, created_by_customer, spec, progress, expires_at, expiry_set_at, access_managed, customer_id)
+      VALUES (?, ?, ?, NULL, 'creating', 1, ?, ?, ?, ?, ?, ?)
     `).run(vmid, account.id, isContainer ? 'lxc' : 'qemu', JSON.stringify({
       cores: spec.cores, memoryMb: spec.memoryMb, diskGb: spec.diskGb, template: templateRef,
       hostname: spec.hostname,
       ...(grant ? { accessRuleId: grant.id, pool: destinationPool } : {}),
-    }), isContainer ? 'Creating the container' : 'Copying the image', expiryForNewServer(account.id), new Date().toISOString(), grant ? 1 : 0);
+    }), isContainer ? 'Creating the container' : 'Copying the image', expiryForNewServer(account.id,new Date(),customer.id), new Date().toISOString(), grant ? 1 : 0,customer.id);
     audit(req, vmid, 'server_create_started', { template: templateRef, hostname: spec.hostname, ...(grant ? { accessRuleId: grant.id, pool: destinationPool } : {}) });
 
     background = true;
-    const actor = { account: { id: account.id }, ip: req.ip };
+    const actor = { account: { id: account.id }, customerId:customer.id, ip: req.ip };
     (isContainer
       ? finishContainer(actor, ctRow.node, vmid, upid, net)
       : finishCreate(actor, tpl.node, vmid, upid, spec, tplRow, net))
-      .finally(() => creatingFor.delete(account.id));
+      .finally(() => creatingFor.delete(capacityKey));
 
     return vmid;
   } finally {
-    if (!background) creatingFor.delete(account.id);
+    if (!background) creatingFor.delete(capacityKey);
   }
 }
 
@@ -357,8 +381,17 @@ async function finishContainer(actor, node, vmid, createUpid, net, { done = 'ser
  * erased. Only for servers the customer created. Returns right away; progress is
  * tracked through the `state` column like a creation.
  */
+function lifecycleAccount(req,row,customer) {
+  if(row.access_managed || customer.role!=='admin') return req.account;
+  const owner=customer.legacy_user_id ? db.prepare('SELECT * FROM users WHERE id=?').get(customer.legacy_user_id) : null;
+  return {...req.account,can_create:owner?owner.can_create:1,
+    ...Object.fromEntries(['max_servers','max_cores','max_memory_mb','max_disk_gb'].map(k=>[k,owner?owner[k]:Number.MAX_SAFE_INTEGER]))};
+}
+
 export async function reinstallServer(req, row, input) {
-  const account = req.account;
+  const customer=requireCustomer(req);
+  const account=lifecycleAccount(req,row,customer);
+  const capacityKey=`customer:${customer.id}`;
   if (!row.created_by_customer) {
     throw new ProvisionError(403, 'Only servers you created yourself can be reinstalled');
   }
@@ -368,10 +401,10 @@ export async function reinstallServer(req, row, input) {
   if (!['ready', 'failed'].includes(row.state)) {
     throw new ProvisionError(409, 'Wait until the current operation on this server has finished');
   }
-  if (creatingFor.has(account.id)) {
+  if (capacityBusy(customer.id)) {
     throw new ProvisionError(409, 'Another server is being set up. Wait until it has finished.');
   }
-  creatingFor.add(account.id);
+  creatingFor.add(capacityKey);
 
   let background = false;
   try {
@@ -407,14 +440,20 @@ export async function reinstallServer(req, row, input) {
     applySetupRules(spec, offered);
     const tpl = isContainer ? null : await locateTemplate(spec.templateId);
     const templateRef = isContainer ? spec.templateId : tpl.vmid;
-    const net = config.network.enabled ? await ensureNetwork(account.id) : null;
+    let destinationPool=config.pve.pool;
+    if(customer.pools.length) {
+      const memberships=await Promise.all(customer.pools.map(async pool=>({pool,contains:(await poolMembers(pool)).has(vmid)})));
+      destinationPool=memberships.find(p=>p.contains)?.pool ?? (customer.pools.includes(old.pool)?old.pool:null);
+      if(!destinationPool) throw new ProvisionError(403,'The reinstall destination is outside this customer’s pool boundary');
+    }
+    const net = config.network.enabled ? await ensureNetwork(account.id,row.customer_id) : null;
 
     // The row keeps the ID reserved: new creations skip IDs the panel knows.
     db.prepare(`
       UPDATE vms SET state = 'creating', error = NULL, progress = 'Removing the old installation', spec = ?, ostype = NULL
       WHERE vmid = ?`).run(JSON.stringify({
       cores: spec.cores, memoryMb: spec.memoryMb, diskGb: spec.diskGb, template: templateRef,
-      hostname: spec.hostname, mac, reinstalledAt: new Date().toISOString(),
+      hostname: spec.hostname, mac, reinstalledAt: new Date().toISOString(), ...(customer.pools.length?{pool:destinationPool}:{}),
     }), vmid);
     // Things that belonged to the old installation
     db.prepare('DELETE FROM tasks WHERE vmid = ?').run(vmid);
@@ -422,7 +461,7 @@ export async function reinstallServer(req, row, input) {
     audit(req, vmid, 'server_reinstall_started', { template: templateRef, previousTemplate: old.template ?? null });
 
     background = true;
-    const actor = { account: { id: account.id }, ip: req.ip };
+    const actor = { account: { id: account.id }, customerId:customer.id, ip: req.ip };
     (async () => {
       try {
         if (guest) {
@@ -434,7 +473,7 @@ export async function reinstallServer(req, row, input) {
         if (isContainer) {
           setProgress.run('Creating the container', vmid);
           const upid = await serial(() => pve.post(`/nodes/${encodeURIComponent(ctRow.node)}/lxc`,
-            containerParams({ vmid, row: ctRow, spec, net, pool: config.pve.pool, mac })));
+            containerParams({ vmid, row: ctRow, spec, net, pool: destinationPool, mac })));
           await finishContainer(actor, ctRow.node, vmid, upid, net, { done: 'server_reinstalled', failed: 'server_reinstall_failed' });
           return;
         }
@@ -444,7 +483,7 @@ export async function reinstallServer(req, row, input) {
           name: spec.hostname,
           full: 1,
           storage: tplRow.storage || undefined,
-          pool: config.pve.pool,
+          pool: destinationPool,
         }));
         await finishCreate(actor, tpl.node, vmid, upid, spec, tplRow, net, {
           mac, done: 'server_reinstalled', failed: 'server_reinstall_failed',
@@ -455,11 +494,11 @@ export async function reinstallServer(req, row, input) {
         audit(actor, vmid, 'server_reinstall_failed', { error: err.message });
         invalidateGuestCache();
       } finally {
-        creatingFor.delete(account.id);
+        creatingFor.delete(capacityKey);
       }
     })();
   } finally {
-    if (!background) creatingFor.delete(account.id);
+    if (!background) creatingFor.delete(capacityKey);
   }
 }
 
@@ -486,13 +525,17 @@ else { 'nothing' }
  * restart by Proxmox (optionally right away); disks only grow.
  */
 export async function resizeServer(req, row, { cores, memoryMb, diskGb, restart = false }) {
-  const account = req.account;
+  const customer=requireCustomer(req);
+  const account=lifecycleAccount(req,row,customer);
+  const capacityKey=`customer:${customer.id}`;
   if (!row.created_by_customer) throw new ProvisionError(403, 'Only servers you created yourself can be resized');
   if (!account.can_create) throw new ProvisionError(403, 'Resizing is not enabled for your account');
   if (activeRun(row.vmid)) throw new ProvisionError(409, 'Windows updates are being installed on this server. Wait until they have finished.');
   if (row.expired_at) throw new ProvisionError(403, 'This server has expired. Extend it first.');
   if (row.state !== 'ready') throw new ProvisionError(409, 'Wait until the current operation on this server has finished');
   if (resizing.has(row.vmid)) throw new ProvisionError(409, 'This server is already being resized');
+  if(capacityBusy(customer.id)) throw new ProvisionError(409,'Another operation is changing this customer’s resource usage');
+  creatingFor.add(capacityKey);
   resizing.add(row.vmid);
   try {
     const guest = (await clusterGuests(true)).get(row.vmid);
@@ -515,9 +558,12 @@ export async function resizeServer(req, row, { cores, memoryMb, diskGb, restart 
     const diskChanged = next.diskGb > cur.diskGb;
     if (!cpuMemChanged && !diskChanged) throw new ProvisionError(400, 'Nothing to change');
 
+    const total=await customerUsage(customer);
+    if(Object.entries(customer.limits).some(([key,limit])=>key!=='servers'&&limit>0&&total[key]-cur[key]+next[key]>limit)) throw new ProvisionError(409,'This exceeds the customer’s shared resource limits');
+
     // Plan: everything else the customer uses, plus this server's new size
     const limits = limitsOf(account);
-    const usage = await usageOf(account.id);
+    const usage = await usageOf(customer.legacy_user_id??row.user_id,row.customer_id);
     const others = { cores: usage.cores - cur.cores, memoryMb: usage.memoryMb - cur.memoryMb, diskGb: usage.diskGb - cur.diskGb };
     const over = [];
     if (others.cores + next.cores > limits.cores) over.push(`CPU cores (at most ${limits.cores - others.cores} for this server)`);
@@ -581,6 +627,7 @@ export async function resizeServer(req, row, { cores, memoryMb, diskGb, restart 
     };
   } finally {
     resizing.delete(row.vmid);
+    creatingFor.delete(capacityKey);
   }
 }
 
@@ -606,7 +653,7 @@ export async function deleteServer(req, row) {
   db.prepare("UPDATE vms SET state = 'deleting' WHERE vmid = ?").run(row.vmid);
   audit(req, row.vmid, 'server_delete_started');
 
-  const actor = { account: { id: req.account.id }, ip: req.ip };
+  const actor = { account: { id: req.account.id }, customerId:row.customer_id, ip: req.ip };
   waitTask(guest.node, upid)
     .then(async () => {
       db.prepare('DELETE FROM vms WHERE vmid = ?').run(row.vmid);

@@ -97,9 +97,11 @@ test('legacy assignments survive policy changes; group users do not acquire owne
   await save([rule('share-production', { pools: ['tacid-prod'], actions: ['view', 'delete', 'resize', 'reinstall'] })]);
   assert.equal((await owner.get('/api/vms/102')).status, 200);
   const c = await login('other@tacticalid.io', { groups: ['developers'] });
-  assert.equal((await c.get('/api/vms/102')).status, 200);
+  // Explicit assignment to another customer wins over a matching shared pool.
+  assert.equal((await c.get('/api/vms/102')).status, 404);
   assert.equal((await c.del('/api/vms/102')).status, 404);
   assert.equal((await c.post('/api/vms/102/reinstall', { templateId: 9000 })).status, 404);
+  await admin.del('/api/admin/vms/102');
 });
 
 test('policy cloning binds template, storage, destination and quota; creators lose access after revocation', async () => {

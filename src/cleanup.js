@@ -1,5 +1,6 @@
 // Destroying servers and deleting customers completely (admin actions).
 
+import { hasSharedResources } from './tenancy.js';
 import { db, audit } from './db.js';
 import { config } from './config.js';
 import { pve, clusterGuests, guestPath, waitTask, invalidateGuestCache } from './pve.js';
@@ -25,6 +26,7 @@ export function isProtected(vmid, guest) {
  * removes it from the panel. Resolves when Proxmox has finished.
  */
 export async function destroyServer(actor, vmid) {
+  actor={account:actor.account,ip:actor.ip,customerId:actor.customerId??db.prepare('SELECT customer_id FROM vms WHERE vmid=?').get(vmid)?.customer_id};
   const guest = (await clusterGuests(true)).get(vmid);
   if (isProtected(vmid, guest)) throw new CleanupError(403, `Server ${vmid} is protected and can't be deleted here`);
 
@@ -80,6 +82,7 @@ export async function deletionPlan(userId) {
 export function startCustomerDeletion(req, userId, { keepAssigned = false, keepNetwork = false } = {}) {
   const user = db.prepare('SELECT id, email, deleting, deletion_error FROM users WHERE id = ?').get(userId);
   if (!user) throw new CleanupError(404, 'User not found');
+  if(hasSharedResources(userId)) throw new CleanupError(409,'Disable the user to preserve shared customer resources');
   if (user.deleting && !user.deletion_error) throw new CleanupError(409, 'This customer is already being deleted');
 
   db.prepare('UPDATE users SET deleting = 1, deletion_error = NULL WHERE id = ?').run(userId);

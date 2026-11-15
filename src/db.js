@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
+import { migrateTenancy } from './tenancy-migration.js';
 
 fs.mkdirSync(path.dirname(path.resolve(config.dbPath)), { recursive: true });
 
@@ -316,8 +317,10 @@ db.exec(`
   WHERE deleting = 1 AND deletion_error IS NULL;
 `);
 
+migrateTenancy(db);
+
 const insertAudit = db.prepare(
-  'INSERT INTO audit_log (user_id, vmid, action, detail, ip) VALUES (?, ?, ?, ?, ?)'
+  'INSERT INTO audit_log (user_id, vmid, action, detail, ip, customer_id) VALUES (?, ?, ?, ?, ?, ?)'
 );
 
 /** `req` may be a Fastify request or any { account: { id }, ip } object. */
@@ -327,6 +330,7 @@ export function audit(req, vmid, action, detail = null) {
     vmid ?? null,
     action,
     detail ? JSON.stringify(detail) : null,
-    req.ip
+    req.ip,
+    req.customer?.id ?? req.customerId ?? (vmid ? db.prepare('SELECT customer_id FROM vms WHERE vmid=?').get(vmid)?.customer_id : null) ?? null
   );
 }

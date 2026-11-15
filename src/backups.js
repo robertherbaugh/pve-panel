@@ -15,7 +15,9 @@ import { db, audit } from './db.js';
 import { config } from './config.js';
 import { pve, clusterGuests, guestPath, waitTask, invalidateGuestCache, PveError } from './pve.js';
 import { networkOf, ensureIsolation } from './network.js';
-import { limitsOf, usageOf, diskTotalGb } from './provision.js';
+import { customerById,personalCustomerId } from './tenancy.js';
+import { capacityLocks,capacityBusy } from './capacity.js';
+import { limitsOf, usageOf, customerUsage, diskTotalGb } from './provision.js';
 import { activeRun as activeWindowsUpdate } from './winupdate.js';
 
 const KEY = 'backups';
@@ -60,15 +62,15 @@ export function saveBackupSettings(input) {
 }
 
 /** Panel-made backups allowed per server for this customer (0 = none). */
-export function maxBackupsFor(userId) {
+export function maxBackupsFor(userId,customerId=personalCustomerId(userId)) {
   const s = backupSettings();
-  const own = db.prepare('SELECT max_backups FROM users WHERE id = ?').get(userId)?.max_backups;
+  const own = customerById(customerId)?.maxBackups;
   return own ?? s.maxPerServer;
 }
 
-export function backupsAvailableFor(userId) {
+export function backupsAvailableFor(userId,customerId=personalCustomerId(userId)) {
   const s = backupSettings();
-  return s.enabled && !!s.storage && maxBackupsFor(userId) > 0;
+  return s.enabled && !!s.storage && maxBackupsFor(userId,customerId) > 0;
 }
 
 /** Storages that can hold backups, per node (for the admin settings). */
@@ -103,7 +105,7 @@ async function storageType(node, storage) {
 
 // ---- Listing (with the ownership filter) ------------------------------------------------
 
-const madeByPanel = db.prepare('SELECT * FROM backups WHERE vmid = ? AND user_id = ? AND storage = ?');
+const madeByPanel = db.prepare('SELECT * FROM backups WHERE vmid = ? AND customer_id = ? AND storage = ?');
 const contentPath = (node, storage) => `/nodes/${encodeURIComponent(node)}/storage/${encodeURIComponent(storage)}/content`;
 
 /**
@@ -116,7 +118,7 @@ export async function visibleBackups(row, guest) {
   const items = await pve.get(contentPath(guest.node, s.storage), { content: 'backup', vmid: row.vmid });
   const since = Math.floor(Date.parse(row.assigned_at ?? new Date().toISOString()) / 1000);
   // only records on the storage in use: switching storages forgets nothing
-  const own = new Map(madeByPanel.all(row.vmid, row.user_id, s.storage).map((b) => [b.volid, b]));
+  const own = new Map(madeByPanel.all(row.vmid, row.customer_id, s.storage).map((b) => [b.volid, b]));
   const present = new Set(items.map((i) => i.volid));
   for (const volid of own.keys()) {
     if (!present.has(volid)) db.prepare('DELETE FROM backups WHERE volid = ?').run(volid);
@@ -148,7 +150,7 @@ async function requireVisible(row, guest, volid) {
 
 // ---- What the customer's Backups tab shows ----------------------------------------------
 
-const lastJob = db.prepare('SELECT * FROM backup_jobs WHERE vmid = ? AND user_id = ? ORDER BY id DESC LIMIT 1');
+const lastJob = db.prepare('SELECT * FROM backup_jobs WHERE vmid = ? AND customer_id = ? ORDER BY id DESC LIMIT 1');
 const activeJobFor = db.prepare("SELECT * FROM backup_jobs WHERE vmid = ? AND state IN ('queued', 'running') ORDER BY id LIMIT 1");
 
 function presentJob(j) {
@@ -169,8 +171,8 @@ function presentSchedule(s) {
 
 export async function backupInfo(row, guest) {
   const s = backupSettings();
-  const max = maxBackupsFor(row.user_id);
-  if (!backupsAvailableFor(row.user_id)) return { available: false, enabled: s.enabled };
+  const max = maxBackupsFor(row.user_id,row.customer_id);
+  if (!backupsAvailableFor(row.user_id,row.customer_id)) return { available: false, enabled: s.enabled };
   const type = await storageType(guest.node, s.storage);
   let backups = [];
   let error = null;
@@ -179,7 +181,7 @@ export async function backupInfo(row, guest) {
   } catch (err) {
     error = err instanceof PveError ? `The backup storage can't be read right now (${err.message}).` : err.message;
   }
-  const schedule = db.prepare('SELECT * FROM backup_schedules WHERE vmid = ?').get(row.vmid);
+  const schedule = db.prepare('SELECT * FROM backup_schedules WHERE vmid = ? AND customer_id=?').get(row.vmid,row.customer_id);
   return {
     available: true,
     max,
@@ -188,7 +190,7 @@ export async function backupInfo(row, guest) {
     restore: ['qemu', 'lxc'].includes(guest.type),
     schedulesAllowed: s.schedules,
     schedule: s.schedules ? presentSchedule(schedule) : null,
-    job: presentJob(activeJobFor.get(row.vmid) ?? lastJob.get(row.vmid, row.user_id)),
+    job: presentJob((activeJobFor.get(row.vmid)?.customer_id===row.customer_id ? activeJobFor.get(row.vmid) : null) ?? lastJob.get(row.vmid, row.customer_id)),
     backups,
     error,
   };
@@ -200,28 +202,28 @@ function busyCheck(vmid) {
   if (activeJobFor.get(vmid)) throw new BackupError(409, 'A backup or restore of this server is already running. Wait until it has finished.');
 }
 
-function insertJob(row, action, kind, options = null) {
+function insertJob(row, action, kind, options = null,actorId=row.user_id) {
   busyCheck(row.vmid); // again, right before queuing: no await between this check and the insert
   const r = db.prepare(`
-    INSERT INTO backup_jobs (vmid, user_id, action, kind, options, state, step)
-    VALUES (?, ?, ?, ?, ?, 'queued', 'Waiting for other backups to finish')
-  `).run(row.vmid, row.user_id, action, kind, options ? JSON.stringify(options) : null);
+    INSERT INTO backup_jobs (vmid, user_id, action, kind, options, state, step, customer_id)
+    VALUES (?, ?, ?, ?, ?, 'queued', 'Waiting for other backups to finish', ?)
+  `).run(row.vmid, actorId, action, kind, options ? JSON.stringify(options) : null,row.customer_id);
   const id = Number(r.lastInsertRowid);
   enqueue(id);
   return presentJob(db.prepare('SELECT * FROM backup_jobs WHERE id = ?').get(id));
 }
 
 export async function startBackup(req, row, guest) {
-  if (!backupsAvailableFor(row.user_id)) throw new BackupError(403, 'Backups are not available for your account');
+  if (!backupsAvailableFor(row.user_id,row.customer_id)) throw new BackupError(403, 'Backups are not available for your account');
   busyCheck(row.vmid);
   const list = await visibleBackups(row, guest);
-  const max = maxBackupsFor(row.user_id);
+  const max = maxBackupsFor(row.user_id,row.customer_id);
   const used = list.filter((b) => b.kind !== 'provider').length;
   if (used >= max) {
     throw new BackupError(409, `You have ${used} of ${max} backups for this server. Delete one to make a new backup.`);
   }
   audit(req, row.vmid, 'backup_create');
-  return insertJob(row, 'backup', 'manual');
+  return insertJob(row, 'backup', 'manual',null,req.account.id);
 }
 
 /** Parses "key: value" lines of a backed-up VM config (stops at the snapshot sections). */
@@ -235,14 +237,19 @@ function parseConfig(text) {
   return cfg;
 }
 
-export async function startRestore(req, row, guest, { volid, backupFirst = true, start = null }) {
-  if (!backupsAvailableFor(row.user_id)) throw new BackupError(403, 'Backups are not available for your account');
+export async function startRestore(req,row,guest,options) {
+  if(capacityBusy(row.customer_id)) throw new BackupError(409,'Another operation is changing this customer’s resource usage');
+  const key=`customer:${row.customer_id}`; capacityLocks.add(key);
+  try { return await prepareRestore(req,row,guest,options); } finally { capacityLocks.delete(key); }
+}
+async function prepareRestore(req, row, guest, { volid, backupFirst = true, start = null }) {
+  if (!backupsAvailableFor(row.user_id,row.customer_id)) throw new BackupError(403, 'Backups are not available for your account');
   busyCheck(row.vmid);
   if (activeWindowsUpdate(row.vmid)) throw new BackupError(409, 'Windows updates are being installed. Restore after they have finished.');
   await requireVisible(row, guest, volid);
 
   // Within the plan: the restored size replaces the current one
-  if (row.created_by_customer) {
+  {
     const [backupCfg, currentCfg] = await Promise.all([
       pve.get(`/nodes/${encodeURIComponent(guest.node)}/vzdump/extractconfig`, { volume: volid }).then(parseConfig),
       pve.get(`${guestPath(guest)}/config`),
@@ -250,10 +257,14 @@ export async function startRestore(req, row, guest, { volid, backupFirst = true,
     const size = (c) => ({
       cores: (Number(c.cores) || 1) * (Number(c.sockets) || 1), memoryMb: Number(c.memory) || 512, diskGb: diskTotalGb(c),
     });
+    const customer=customerById(row.customer_id);
+    const total=await customerUsage(customer);
+    const bsize=size(backupCfg),current=size(currentCfg);
+    if(Object.entries(customer.limits).some(([k,v])=>k!=='servers'&&v>0&&total[k]-current[k]+bsize[k]>v)) throw new BackupError(409,'This backup exceeds the customer’s shared resource limits');
     const account = db.prepare('SELECT * FROM users WHERE id = ?').get(row.user_id);
     if (account?.can_create) {
       const limits = limitsOf(account);
-      const usage = await usageOf(row.user_id);
+      const usage = await usageOf(row.user_id,row.customer_id);
       const [b, cur] = [size(backupCfg), size(currentCfg)];
       const over = [];
       if (usage.cores - cur.cores + b.cores > limits.cores) over.push('CPU cores');
@@ -268,13 +279,13 @@ export async function startRestore(req, row, guest, { volid, backupFirst = true,
 
   if (backupFirst) {
     const used = (await visibleBackups(row, guest)).filter((b) => b.kind !== 'provider').length;
-    if (used >= maxBackupsFor(row.user_id)) {
+    if (used >= maxBackupsFor(row.user_id,row.customer_id)) {
       throw new BackupError(409, 'No room for a backup of the current state: delete a backup first, or restore without one.');
     }
   }
   const wasRunning = guest.status === 'running';
   audit(req, row.vmid, 'backup_restore_started', { backup: volid, backupFirst });
-  return insertJob(row, 'restore', null, { volid, backupFirst: !!backupFirst, start: start ?? wasRunning });
+  return insertJob(row, 'restore', null, { volid, backupFirst: !!backupFirst, start: start ?? wasRunning },req.account.id);
 }
 
 export async function deleteBackup(req, row, guest, volid) {
@@ -309,13 +320,13 @@ export function nextRun(s, from = Date.now()) {
 
 export function setSchedule(req, row, input) {
   const s = backupSettings();
-  if (!backupsAvailableFor(row.user_id) || !s.schedules) throw new BackupError(403, 'Automatic backups are not available for your account');
+  if (!backupsAvailableFor(row.user_id,row.customer_id) || !s.schedules) throw new BackupError(403, 'Automatic backups are not available for your account');
   if (input.frequency === 'off') {
     db.prepare('DELETE FROM backup_schedules WHERE vmid = ?').run(row.vmid);
     audit(req, row.vmid, 'backup_schedule', { frequency: 'off' });
     return null;
   }
-  const max = maxBackupsFor(row.user_id);
+  const max = maxBackupsFor(row.user_id,row.customer_id);
   if (input.keep > max) throw new BackupError(400, `Keep at most ${max} backups`);
   if (input.frequency === 'weekly' && !Number.isInteger(input.weekday)) throw new BackupError(400, 'Choose the day of the week');
   const sched = {
@@ -323,25 +334,25 @@ export function setSchedule(req, row, input) {
     hour: input.hour, minute: input.minute, keep: input.keep,
   };
   db.prepare(`
-    INSERT INTO backup_schedules (vmid, user_id, frequency, weekday, hour, minute, keep, next_run_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(vmid) DO UPDATE SET user_id = excluded.user_id, frequency = excluded.frequency, weekday = excluded.weekday,
+    INSERT INTO backup_schedules (vmid, user_id, frequency, weekday, hour, minute, keep, next_run_at, customer_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(vmid) DO UPDATE SET customer_id=excluded.customer_id,user_id = excluded.user_id, frequency = excluded.frequency, weekday = excluded.weekday,
       hour = excluded.hour, minute = excluded.minute, keep = excluded.keep, next_run_at = excluded.next_run_at, last_error = NULL
-  `).run(row.vmid, row.user_id, sched.frequency, sched.weekday, sched.hour, sched.minute, sched.keep, nextRun(sched));
+  `).run(row.vmid, req.account.id, sched.frequency, sched.weekday, sched.hour, sched.minute, sched.keep, nextRun(sched),row.customer_id);
   audit(req, row.vmid, 'backup_schedule', sched);
-  return presentSchedule(db.prepare('SELECT * FROM backup_schedules WHERE vmid = ?').get(row.vmid));
+  return presentSchedule(db.prepare('SELECT * FROM backup_schedules WHERE vmid = ? AND customer_id=?').get(row.vmid,row.customer_id));
 }
 
 async function schedulerTick(log) {
   const s = backupSettings();
   const due = db.prepare(`
-    SELECT b.*, v.state AS vm_state, v.user_id AS owner FROM backup_schedules b JOIN vms v ON v.vmid = b.vmid
+    SELECT b.*, v.state AS vm_state, v.customer_id AS owner FROM backup_schedules b JOIN vms v ON v.vmid = b.vmid
     WHERE b.next_run_at <= ?`).all(new Date().toISOString());
   for (const sch of due) {
     const advance = (error = null) => db.prepare('UPDATE backup_schedules SET next_run_at = ?, last_run_at = ?, last_error = COALESCE(?, last_error) WHERE vmid = ?')
       .run(nextRun(sch), new Date().toISOString(), error, sch.vmid);
-    if (sch.owner !== sch.user_id) { db.prepare('DELETE FROM backup_schedules WHERE vmid = ?').run(sch.vmid); continue; }
-    if (!s.schedules || !backupsAvailableFor(sch.user_id) || sch.vm_state !== 'ready') { advance(); continue; }
+    if (sch.owner !== sch.customer_id) { db.prepare('DELETE FROM backup_schedules WHERE vmid = ?').run(sch.vmid); continue; }
+    if (!s.schedules || !backupsAvailableFor(sch.user_id,sch.customer_id) || sch.vm_state !== 'ready') { advance(); continue; }
     if (activeJobFor.get(sch.vmid)) { advance('Skipped: another backup or restore was running'); continue; }
     advance();
     const row = db.prepare('SELECT * FROM vms WHERE vmid = ?').get(sch.vmid);
@@ -398,8 +409,8 @@ async function backupNow(job, guest, kind, resumeUpid = null) {
   const fresh = items.filter((i) => Number(i.vmid) === guest.vmid && Number(i.ctime) >= startedSec && !known.has(i.volid))
     .sort((a, b) => Number(b.ctime) - Number(a.ctime))[0];
   if (!fresh) throw new Error('The backup finished, but it can\'t be found on the backup storage');
-  db.prepare('INSERT OR IGNORE INTO backups (volid, vmid, user_id, storage, kind) VALUES (?, ?, ?, ?, ?)')
-    .run(fresh.volid, guest.vmid, job.user_id, s.storage, kind);
+  db.prepare('INSERT OR IGNORE INTO backups (volid, vmid, user_id, storage, kind, customer_id) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(fresh.volid, guest.vmid, job.user_id, s.storage, kind,job.customer_id);
   return fresh.volid;
 }
 
@@ -408,8 +419,8 @@ async function rotate(job, guest) {
   const sch = db.prepare('SELECT keep FROM backup_schedules WHERE vmid = ?').get(job.vmid);
   if (!sch) return;
   const s = backupSettings();
-  const auto = db.prepare("SELECT volid FROM backups WHERE vmid = ? AND user_id = ? AND storage = ? AND kind = 'scheduled' ORDER BY created_at DESC, volid DESC")
-    .all(job.vmid, job.user_id, s.storage);
+  const auto = db.prepare("SELECT volid FROM backups WHERE vmid = ? AND customer_id = ? AND storage = ? AND kind = 'scheduled' ORDER BY created_at DESC, volid DESC")
+    .all(job.vmid, job.customer_id, s.storage);
   for (const old of auto.slice(sch.keep)) {
     try { await removeVolume(guest.node, s.storage, old.volid); } catch (err) { logger?.warn(`Rotating ${old.volid}: ${err.message}`); }
   }
@@ -418,8 +429,10 @@ async function rotate(job, guest) {
 async function runJob(id, { resume = false } = {}) {
   let job = db.prepare('SELECT * FROM backup_jobs WHERE id = ?').get(id);
   if (!job || !['queued', 'running'].includes(job.state)) return;
-  const actor = { account: { id: job.user_id }, ip: 'backup' };
+  const actor = { account: { id: job.user_id }, customerId:job.customer_id, ip: 'backup' };
   try {
+    const owner=db.prepare('SELECT customer_id FROM vms WHERE vmid=?').get(job.vmid);
+    if(!owner||owner.customer_id!==job.customer_id) throw new BackupError(409,'Server ownership changed');
     const guest = await locate(job.vmid);
     if (job.action === 'backup') {
       const volid = await backupNow(job, guest, job.kind, resume ? job.upid : null);
@@ -465,7 +478,7 @@ async function runJob(id, { resume = false } = {}) {
     invalidateGuestCache();
 
     // The backup may be older than today's isolation rules: put them back
-    const net = config.network.enabled ? networkOf(job.user_id) : null;
+    const net = config.network.enabled ? networkOf(job.user_id,job.customer_id) : null;
     if (net) {
       const cfg = await pve.get(`${path}/config`);
       const inNet = Object.entries(cfg).some(([k, v]) => /^net\d+$/.test(k) && new RegExp(`bridge=${net.vnet}(,|$)`).test(String(v)));

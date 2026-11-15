@@ -14,6 +14,7 @@
 // filter rules stay in force.
 
 import crypto from 'node:crypto';
+import { authorizedRow } from './access.js';
 import { db, audit } from './db.js';
 import { config } from './config.js';
 import { pve, locateGuest, guestPath } from './pve.js';
@@ -146,7 +147,7 @@ async function liveStatus(path, os) {
 // ---- Public API ------------------------------------------------------------------
 
 async function serverContext(req, vmid) {
-  const vm = db.prepare('SELECT * FROM vms WHERE vmid = ? AND user_id = ?').get(vmid, req.account.id);
+  const vm = req.accessRow ?? await authorizedRow(req,vmid,'tailscale.read');
   if (!vm) throw new TailscaleError(404, 'Server not found');
   if (vm.state !== 'ready') throw new TailscaleError(409, 'This server is not ready yet');
   const guest = await locateGuest(vmid);
@@ -158,8 +159,9 @@ async function serverContext(req, vmid) {
 export async function tailscaleStatus(req, vmid) {
   if (!config.tailscale.enabled) return { available: false };
   const { guest, path, os, agentConfigured } = await serverContext(req, vmid);
-  const r = row(vmid);
-  const net = networkOf(req.account.id);
+  const saved=row(vmid);
+  const r=saved?.customer_id===req.customer?.id?saved:null;
+  const net = networkOf(req.account.id,req.customer?.id);
   const base = {
     available: true,
     os,
@@ -201,7 +203,7 @@ export async function connectTailscale(req, vmid, { authKey, mode, hostname }) {
     throw new TailscaleError(400, 'Tailscale through the panel needs a VM. In a container, install Tailscale yourself '
       + '(your provider may need to allow /dev/net/tun).');
   }
-  const net = networkOf(req.account.id);
+  const net = networkOf(req.account.id,req.customer?.id);
   if (mode === 'gateway' && (os !== 'linux' || !net)) {
     throw new TailscaleError(400, 'Gateway mode needs a Linux server in your private network');
   }
@@ -218,11 +220,11 @@ export async function connectTailscale(req, vmid, { authKey, mode, hostname }) {
   }
 
   db.prepare(`
-    INSERT INTO tailscale (vmid, user_id, mode, state, progress, error, hostname, ts_ip)
-    VALUES (?, ?, ?, 'installing', 'Installing Tailscale', NULL, ?, NULL)
-    ON CONFLICT(vmid) DO UPDATE SET mode = excluded.mode, state = 'installing', progress = excluded.progress,
+    INSERT INTO tailscale (vmid, user_id, mode, state, progress, error, hostname, ts_ip, customer_id)
+    VALUES (?, ?, ?, 'installing', 'Installing Tailscale', NULL, ?, NULL, ?)
+    ON CONFLICT(vmid) DO UPDATE SET customer_id=excluded.customer_id, user_id=excluded.user_id, mode = excluded.mode, state = 'installing', progress = excluded.progress,
       error = NULL, hostname = excluded.hostname, ts_ip = NULL, updated_at = datetime('now')
-  `).run(vmid, req.account.id, mode, hostname);
+  `).run(vmid, req.account.id, mode, hostname,req.customer.id);
   audit(req, vmid, 'tailscale_connect_started', { mode, hostname });
   const actor = { account: { id: req.account.id }, ip: req.ip };
 
@@ -283,7 +285,7 @@ echo "forgotten: $reason"
  */
 export async function disconnectTailscale(req, vmid) {
   const r = row(vmid);
-  if (!r || r.user_id !== req.account.id) throw new TailscaleError(404, 'This server is not connected to Tailscale');
+  if (!r || r.customer_id !== req.customer?.id) throw new TailscaleError(404, 'This server is not connected to Tailscale');
   if (r.state === 'failed') {
     db.prepare('DELETE FROM tailscale WHERE vmid = ?').run(vmid);
     return { removedFromTailnet: true };
@@ -330,8 +332,8 @@ export async function disconnectTailscale(req, vmid) {
 export function tailscaleOverview() {
   return db.prepare(`
     SELECT t.vmid, t.mode, t.state, t.error, t.hostname, t.ts_ip AS ip, t.updated_at AS updatedAt,
-           u.email, v.label
-    FROM tailscale t JOIN users u ON u.id = t.user_id LEFT JOIN vms v ON v.vmid = t.vmid
+           COALESCE(c.name,u.email) AS email,t.customer_id AS customerId, v.label
+    FROM tailscale t JOIN users u ON u.id = t.user_id LEFT JOIN vms v ON v.vmid = t.vmid LEFT JOIN customers c ON c.id=t.customer_id
     ORDER BY u.email, t.vmid
   `).all();
 }

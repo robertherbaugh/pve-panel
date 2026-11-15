@@ -25,14 +25,15 @@ export default async function consoleRoutes(app) {
     const row = await authorizedRow(req, vmid, 'console');
     if (row.state !== 'ready') return reply.code(409).send({ error: 'This server is not ready yet' });
     const guest = await locateGuest(vmid);
-    if (guest.status !== 'running') {
+    const live=await pve.get(`${guestPath(guest)}/status/current`);
+    if (live.status !== 'running') {
       return reply.code(409).send({ error: 'Start the server to open its console' });
     }
 
     const vnc = await pve.post(`${guestPath(guest)}/vncproxy`, { websocket: 1 });
     const id = crypto.randomBytes(24).toString('base64url');
     sessions.set(id, {
-      userId: req.account.id,
+      userId: req.account.id, customerId:req.customer?.id,
       guest,
       port: vnc.port,
       ticket: vnc.ticket,
@@ -52,7 +53,7 @@ export default async function consoleRoutes(app) {
     const s = sessions.get(req.params.session);
     sessions.delete(req.params.session);
 
-    if (!s || s.userId !== req.account.id || s.expires < Date.now()) {
+    if (!s || s.userId !== req.account.id || s.customerId!==req.customer?.id || s.expires < Date.now()) {
       client.close(4001, 'Console session expired');
       return;
     }
@@ -102,14 +103,14 @@ export default async function consoleRoutes(app) {
       if (checking) return;
       checking = true;
       try {
-        const user = db.prepare('SELECT deleting FROM users WHERE id=?').get(req.account.id);
-        if (!user || user.deleting) throw new Error('Account revoked');
+        const user = db.prepare('SELECT deleting,disabled FROM users WHERE id=?').get(req.account.id);
+        if (!user || user.deleting || user.disabled) throw new Error('Account revoked');
         await authorizedRow(req, s.guest.vmid, 'console');
       } catch { closeBoth(); }
       finally { checking = false; }
     }, 5000);
     timer.unref();
-    if (row.access_managed || row.user_id !== req.account.id) {
+    if (authorizationFor(req)) {
       const expires = authorizationFor(req)?.expiresAt ?? 0;
       leaseTimer = setTimeout(closeBoth, Math.max(0, expires * 1000 - Date.now()));
       leaseTimer.unref();

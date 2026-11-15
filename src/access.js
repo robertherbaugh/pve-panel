@@ -1,9 +1,11 @@
+import { rememberAuthorization, forgetAuthorization, authorizationFor } from './oidc-authorizations.js';
+export { rememberAuthorization, forgetAuthorization, authorizationFor };
 // OIDC-derived, application-scoped authorization. Local account ownership is
 // retained for legacy assignments; policy-created servers always require policy.
-import crypto from 'node:crypto';
 import { db } from './db.js';
 import { config } from './config.js';
 import { pve, clusterGuests } from './pve.js';
+import { customerContext, customerById, legacyPolicyCustomer } from './tenancy.js';
 
 export const ACTIONS = Object.freeze([
   'view', 'power', 'console', 'snapshot.create', 'snapshot.delete', 'snapshot.rollback',
@@ -44,7 +46,8 @@ export function validatePolicy(input) {
   if (domains.some((d) => !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/.test(d))) throw fail('Use exact email domains without wildcards');
   const ruleIds = new Set();
   const rules = input.rules.map((r) => {
-    keys(r, ['id', 'name', 'enabled', 'groups', 'entitlements', 'match', 'pools', 'tags', 'vmids', 'actions', 'clone'], 'rule');
+    keys(r, ['id', 'customerId', 'name', 'enabled', 'groups', 'entitlements', 'match', 'pools', 'tags', 'vmids', 'actions', 'clone'], 'rule');
+    if(r.customerId!=null&&(!Number.isSafeInteger(r.customerId)||!customerById(r.customerId))) throw fail('Choose an existing customer for each permission set');
     if (r.enabled !== undefined && typeof r.enabled !== 'boolean') throw fail('Rule enabled must be a boolean');
     if (typeof r.id !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(r.id) || ruleIds.has(r.id)) throw fail('Rule IDs must be unique lowercase identifiers');
     ruleIds.add(r.id);
@@ -55,6 +58,7 @@ export function validatePolicy(input) {
     if (!['any', 'all'].includes(r.match ?? 'any')) throw fail('match must be any or all');
     const resourcePools = strings(r.pools, 'pools', 16);
     if (!resourcePools.length || resourcePools.some((p) => !poolName(p))) throw fail('Use exact pool IDs without wildcards');
+    if(r.customerId!=null&&resourcePools.some(p=>!customerById(r.customerId).pools.includes(p))) throw fail('Permission pools must belong to the selected customer');
     const tags = strings(r.tags ?? [], 'tags', 32);
     if (tags.some((t) => !tagName(t))) throw fail('Invalid exact Proxmox tag');
     const vmids = ids(r.vmids ?? [], 'VM IDs');
@@ -78,7 +82,7 @@ export function validatePolicy(input) {
       }
       clone = { pool: r.clone.pool, templates: [...new Set(templates)], storages, limits: { ...r.clone.limits } };
     } else if (r.clone !== undefined) throw fail('Clone settings require clone action');
-    return { id: r.id, name: r.name.trim(), enabled: r.enabled ?? true, groups, entitlements, match: r.match ?? 'any', pools: resourcePools,
+    return { id: r.id, customerId:r.customerId??null, name: r.name.trim(), enabled: r.enabled ?? true, groups, entitlements, match: r.match ?? 'any', pools: resourcePools,
       tags, vmids, actions, ...(clone ? { clone } : {}) };
   });
   if (new Set(rules.flatMap((r) => r.pools)).size > 64) throw fail('At most 64 distinct pools are supported');
@@ -91,58 +95,36 @@ export function accessPolicy() {
 }
 export function saveAccessPolicy(input) {
   const policy = validatePolicy(input);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+  if(policy.rules.some(r=>r.customerId==null)) {
+    const id=legacyPolicyCustomer(policy);
+    policy.rules=policy.rules.map(r=>({...r,customerId:r.customerId??id}));
+  } else if(policy.allowedDomains.length && policy.rules.length) throw fail('Configure email domains on the customer’s SSO membership settings');
+  policy.allowedDomains=[];
   db.prepare(`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`).run(KEY, JSON.stringify(policy));
+  db.exec('COMMIT');
+  } catch(e) { db.exec('ROLLBACK'); throw e; }
   pools.clear();
   return policy;
 }
 
-/** Only call with claims returned by openid-client's validated code exchange. */
-export function rememberAuthorization(user, claims) {
-  const now = Math.floor(Date.now() / 1000);
-  if (claims.iss !== config.oidc.issuer || claims.sub !== user.oidc_subject || !Number.isFinite(claims.exp) || claims.exp <= now) {
-    throw fail('Invalid OIDC authorization identity');
-  }
-  if (config.oidc.requireVerifiedEmail && claims.email_verified !== true) throw fail('OIDC email must be verified');
-  const identity = {
-    groups: strings(claims[config.oidc.groupsClaim] ?? [], 'OIDC groups'),
-    entitlements: strings(claims[config.oidc.entitlementsClaim] ?? [], 'OIDC entitlements'),
-    emailVerified: claims.email_verified === true,
-    email: typeof claims.email === 'string' ? claims.email.trim().toLowerCase() : '',
-  };
-  const id = crypto.randomBytes(24).toString('base64url');
-  const expires = Math.min(claims.exp, now + config.oidc.authorizationMaxAge);
-  db.prepare('DELETE FROM oidc_authorizations WHERE expires_at < ?').run(now - 86400);
-  db.prepare(`INSERT INTO oidc_authorizations (id,user_id,issuer,subject,claims,expires_at)
-    VALUES (?,?,?,?,?,?)`).run(id, user.id, claims.iss, claims.sub, JSON.stringify(identity), expires);
-  return id;
-}
-export function authorizationFor(req) {
-  if (!req.user?.az) return null;
-  const row = db.prepare(`SELECT a.* FROM oidc_authorizations a JOIN users u ON u.id=a.user_id
-    WHERE a.id=? AND a.user_id=? AND a.issuer=u.oidc_issuer AND a.subject=u.oidc_subject`).get(req.user.az, req.account.id);
-  if (!row || row.issuer !== config.oidc.issuer || row.expires_at <= Date.now() / 1000) return null;
-  const identity = JSON.parse(row.claims);
-  if (config.oidc.requireVerifiedEmail && identity.emailVerified !== true) return null;
-  return { ...identity, expiresAt: row.expires_at };
-}
-export function forgetAuthorization(req) {
-  if (req.user?.az) db.prepare('DELETE FROM oidc_authorizations WHERE id=? AND user_id=?').run(req.user.az, req.account.id);
-}
 export function matchingRules(req) {
   const policy = accessPolicy();
   const auth = authorizationFor(req);
-  if (!policy.enabled || !auth) return [];
+  const customer=customerContext(req);
+  if (!policy.enabled || !auth || !customer) return [];
   if (policy.allowedDomains.length && (auth.email.split('@').length !== 2 || !policy.allowedDomains.includes(auth.email.split('@')[1]))) return [];
   return policy.rules.filter((r) => {
-    if (r.enabled === false) return false;
+    if (r.enabled === false || r.customerId!==customer.id || r.pools.some(p=>!customer.pools.includes(p))) return false;
     const matches = [r.groups.length ? r.groups.some((g) => auth.groups.includes(g)) : null,
       r.entitlements.length ? r.entitlements.some((e) => auth.entitlements.includes(e)) : null].filter((v) => v !== null);
     return r.match === 'all' ? matches.every(Boolean) : matches.some(Boolean);
   });
 }
 
-async function poolMembers(pool) {
+export async function poolMembers(pool) {
   const cached = pools.get(pool);
   if (cached && Date.now() - cached.at < 5000) return cached.members;
   // Pool.Audit is needed. A failure is never replaced with a cached grant.
@@ -157,69 +139,83 @@ async function poolMembers(pool) {
     return new Set();
   }
 }
-export async function permittedActions(req, guest) {
-  if (!guest || guest.template || guest.vmid === config.vpn.gatewayVmid) return [];
-  const tags = new Set(String(guest.tags ?? '').split(';').filter(Boolean));
-  const matching = matchingRules(req).filter((r) => (!r.vmids.length || r.vmids.includes(Number(guest.vmid))) && r.tags.every((t) => tags.has(t)));
-  const membership = new Map(await Promise.all([...new Set(matching.flatMap((r) => r.pools))].map(async (pool) => [pool, await poolMembers(pool)])));
-  const current = new Set(matchingRules(req).map((r) => JSON.stringify(r)));
-  return [...new Set(matching.filter((r) => current.has(JSON.stringify(r)) && r.pools.some((p) => membership.get(p).has(Number(guest.vmid))))
-    .flatMap((r) => r.actions.filter((a) => a !== 'clone')))];
+export async function customerHasGuest(customer, guest, row) {
+  if(!customer || !guest || guest.template || Number(guest.vmid)===config.vpn.gatewayVmid) return false;
+  if(row?.customer_id!=null && row.customer_id!==customer.id) return false;
+  if(!customer.pools.length) return row?.customer_id===customer.id;
+  const memberships=await Promise.all(customer.pools.map(poolMembers));
+  return memberships.some(ids=>ids.has(Number(guest.vmid)));
 }
-
-export async function authorizedRow(req, vmid, action = 'view') {
-  if (!Number.isSafeInteger(vmid) || vmid < 100) throw missing();
-  const row = db.prepare('SELECT * FROM vms WHERE vmid=?').get(vmid);
-  if (row?.user_id === req.account.id && !row.access_managed) return row;
-  if (row?.user_id === req.account.id && row.access_managed && row.state !== 'ready') {
-    const spec = JSON.parse(row.spec ?? '{}');
-    const rule = cloneRules(req).find((r) => r.id === spec.accessRuleId && r.clone.pool === spec.pool);
-    if (rule?.actions.includes(action) && ['view', 'delete'].includes(action)) return row;
+const roleActions = {
+  member:[],viewer:['view'],operator:['view','power','console','snapshot.create','snapshot.delete','snapshot.rollback'],
+  admin:ACTIONS.filter(a=>a!=='clone'),
+};
+export async function permittedActions(req, guest) {
+  const customer=customerContext(req);
+  const row=guest?db.prepare('SELECT * FROM vms WHERE vmid=?').get(Number(guest.vmid)):null;
+  if(!await customerHasGuest(customer,guest,row)) return [];
+  const tags=new Set(String(guest.tags??'').split(';').filter(Boolean));
+  const matching=matchingRules(req).filter(r=>(!r.vmids.length||r.vmids.includes(Number(guest.vmid)))&&r.tags.every(t=>tags.has(t)));
+  const membership=new Map(await Promise.all([...new Set(matching.flatMap(r=>r.pools))].map(async pool=>[pool,await poolMembers(pool)])));
+  const currentCustomer=customerContext(req);
+  if(!currentCustomer || currentCustomer.id!==customer.id) return [];
+  const current=new Set(matchingRules(req).map(r=>JSON.stringify(r)));
+  return [...new Set([...(roleActions[currentCustomer.role]??[]),...matching.filter(r=>current.has(JSON.stringify(r))&&r.pools.some(p=>membership.get(p).has(Number(guest.vmid))))
+    .flatMap(r=>r.actions.filter(a=>a!=='clone'))])];
+}
+export async function authorizedRow(req,vmid,action='view') {
+  if(!Number.isSafeInteger(vmid)||vmid<100) throw missing();
+  const customer=customerContext(req);
+  if(!customer) throw missing();
+  const row=db.prepare('SELECT * FROM vms WHERE vmid=?').get(vmid);
+  if(row?.customer_id!=null&&row.customer_id!==customer.id) throw missing();
+  // Preserve legacy ownership only inside its migrated personal customer.
+  if(row?.customer_id===customer.id&&customer.legacy&&!customer.pools.length&&customer.role==='admin'&&!row.access_managed) return row;
+  if(row?.customer_id===customer.id&&row.state!=='ready') {
+    if(customer.role==='admin' || row.user_id===req.account.id&&cloneRules(req).some(r=>r.actions.includes(action)&&r.id===JSON.parse(row.spec??'{}').accessRuleId)) {
+      if(['view','delete'].includes(action)) return row;
+    }
+    throw missing();
   }
-  if (row?.access_managed && action === 'resize') {
-    const spec = JSON.parse(row.spec ?? '{}');
-    if (!cloneRules(req).some((r) => r.id === spec.accessRuleId && r.clone.pool === spec.pool)) throw missing();
+  const guest=(await clusterGuests()).get(vmid);
+  const actions=await permittedActions(req,guest);
+  if(!actions.includes('view')||!actions.includes(action)) throw missing();
+  if(OWNER_ACTIONS.includes(action)&&row?.user_id!==req.account.id&&customer.role!=='admin') throw missing();
+  if(row?.access_managed&&LEGACY_ONLY.includes(action)) throw missing();
+  if(row?.access_managed&&action==='resize') {
+    const spec=JSON.parse(row.spec??'{}');
+    if(!cloneRules(req).some(r=>r.id===spec.accessRuleId&&r.clone.pool===spec.pool)) throw missing();
   }
-  const guest = (await clusterGuests()).get(vmid);
-  const actions = await permittedActions(req, guest);
-  if (!actions.includes('view') || !actions.includes(action)) throw missing();
-  if (row && row.state !== 'ready' && row.user_id !== req.account.id) throw missing();
-  if (OWNER_ACTIONS.includes(action)
-    && row?.user_id !== req.account.id) throw missing();
-  // Reinstallation, backup restore and background schedules need a policy-aware
-  // lifecycle. Keep these owner-only legacy features closed on managed clones.
-  if (row?.access_managed && LEGACY_ONLY.includes(action)) throw missing();
-  // Ownership-specific features still use their existing row and boundary.
-  // Unassigned guests get no backup history, lifecycle or account-specific data.
-  if (!row && !['view', 'power', 'console', 'snapshot.create', 'snapshot.delete', 'snapshot.rollback'].includes(action)) throw missing();
-  return row ?? { vmid, user_id: null, type: guest.type, state: 'ready', label: null, created_by_customer: 0, access_managed: 1 };
+  if(!row&&!['view','power','console','snapshot.create','snapshot.delete','snapshot.rollback'].includes(action)) throw missing();
+  return row??{vmid,customer_id:customer.id,user_id:null,type:guest.type,state:'ready',label:null,created_by_customer:0,access_managed:1};
 }
 export async function visibleRows(req) {
-  const own = db.prepare('SELECT * FROM vms WHERE user_id=? ORDER BY vmid').all(req.account.id);
-  const rows = new Map(own.filter((r) => !r.access_managed).map((r) => [r.vmid, r]));
-  for (const row of own.filter((r) => r.access_managed && r.state !== 'ready')) {
-    try { rows.set(row.vmid, await authorizedRow(req, row.vmid)); } catch (err) { if (err.statusCode !== 404) throw err; }
-  }
-  if (matchingRules(req).length) {
-    for (const guest of (await clusterGuests()).values()) {
-      if (rows.has(Number(guest.vmid))) continue;
-      try { rows.set(Number(guest.vmid), await authorizedRow(req, Number(guest.vmid))); } catch (err) { if (err.statusCode !== 404) throw err; }
+  const customer=customerContext(req);
+  if(!customer) return [];
+  const own=db.prepare('SELECT * FROM vms WHERE customer_id=? ORDER BY vmid').all(customer.id);
+  const rows=new Map();
+  for(const row of own) { try { rows.set(row.vmid,await authorizedRow(req,row.vmid)); } catch(e) { if(e.statusCode!==404) throw e; } }
+  if(matchingRules(req).length||customer.role!=='member') {
+    for(const guest of (await clusterGuests()).values()) {
+      if(rows.has(Number(guest.vmid))) continue;
+      try { rows.set(Number(guest.vmid),await authorizedRow(req,Number(guest.vmid))); } catch(e) { if(e.statusCode!==404) throw e; }
     }
   }
-  return [...rows.values()].sort((a, b) => a.vmid - b.vmid);
+  return [...rows.values()].sort((a,b)=>a.vmid-b.vmid);
 }
-export async function capabilities(req, row, guest) {
-  const legacy = row.user_id === req.account.id && !row.access_managed;
-  if (legacy) return ACTIONS.filter((a) => a !== 'clone');
-  const available = await permittedActions(req, guest);
-  return available.filter((a) => {
-    if (a === 'resize' && row.access_managed) {
-      const spec = JSON.parse(row.spec ?? '{}');
-      if (!cloneRules(req).some((r) => r.id === spec.accessRuleId && r.clone.pool === spec.pool)) return false;
+export async function capabilities(req,row,guest) {
+  const customer=customerContext(req);
+  if(!customer || row.customer_id!==customer.id) return [];
+  if(customer.legacy&&!customer.pools.length&&customer.role==='admin'&&!row.access_managed) return ACTIONS.filter(a=>a!=='clone');
+  const available=await permittedActions(req,guest);
+  return available.filter(a=>{
+    if(OWNER_ACTIONS.includes(a)&&row.user_id!==req.account.id&&customer.role!=='admin') return false;
+    if(LEGACY_ONLY.includes(a)&&row.access_managed) return false;
+    if(a==='resize'&&row.access_managed) {
+      const spec=JSON.parse(row.spec??'{}');
+      if(!cloneRules(req).some(r=>r.id===spec.accessRuleId&&r.clone.pool===spec.pool)) return false;
     }
-    if (LEGACY_ONLY.includes(a) && row.access_managed) return false;
-    if (OWNER_ACTIONS.includes(a) && row.user_id !== req.account.id) return false;
-    if (row.user_id === null && !['view', 'power', 'console', 'snapshot.create', 'snapshot.delete', 'snapshot.rollback'].includes(a)) return false;
+    if(row.user_id===null&&!['view','power','console','snapshot.create','snapshot.delete','snapshot.rollback'].includes(a)) return false;
     return true;
   });
 }

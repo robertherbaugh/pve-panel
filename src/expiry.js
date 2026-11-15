@@ -8,6 +8,7 @@
 // deletions can be paused globally. Every step is stored per server, so a panel
 // restart never repeats or skips one.
 
+import { personalCustomerId } from './tenancy.js';
 import { db, audit } from './db.js';
 import { clusterGuests, guestPath, pve, waitTask } from './pve.js';
 import { destroyServer } from './cleanup.js';
@@ -66,8 +67,8 @@ export function saveExpirySettings(input) {
 const endOfDay = (yyyyMmDd) => new Date(`${yyyyMmDd}T23:59:59`).toISOString();
 
 /** Expiry for a server the customer is creating now, from the customer's rule. */
-export function expiryForNewServer(userId, now = new Date()) {
-  const u = db.prepare('SELECT expiry_mode, expiry_days, expiry_date FROM users WHERE id = ?').get(userId);
+export function expiryForNewServer(userId, now = new Date(),customerId=personalCustomerId(userId)) {
+  const u = db.prepare('SELECT expiry_mode, expiry_days, expiry_date FROM customers WHERE id = ?').get(customerId);
   if (u?.expiry_mode === 'after_creation' && u.expiry_days > 0) return new Date(now.getTime() + u.expiry_days * DAY).toISOString();
   if (u?.expiry_mode === 'fixed_date' && u.expiry_date) return endOfDay(u.expiry_date);
   return null;
@@ -82,9 +83,9 @@ const resetStages = (vmid, expiresAt, manual) => db.prepare(`
  * (except dates set by hand); "no expiry" removes rule-based dates. "N days after
  * creation" only applies to servers created from now on.
  */
-export function applyCustomerRule(userId) {
-  const u = db.prepare('SELECT expiry_mode, expiry_date FROM users WHERE id = ?').get(userId);
-  const rows = db.prepare('SELECT vmid, expires_at FROM vms WHERE user_id = ? AND expiry_manual = 0').all(userId);
+export function applyCustomerRule(userId,customerId=personalCustomerId(userId)) {
+  const u = db.prepare('SELECT expiry_mode, expiry_date FROM customers WHERE id = ?').get(customerId);
+  const rows = db.prepare('SELECT vmid, expires_at FROM vms WHERE customer_id = ? AND expiry_manual = 0').all(customerId);
   for (const r of rows) {
     if (u?.expiry_mode === 'fixed_date' && u.expiry_date) {
       const at = endOfDay(u.expiry_date);
@@ -115,7 +116,7 @@ export function expiryInfo(row, settings = expirySettings()) {
   if (!row.expires_at) return null;
   const expired = !!row.expired_at;
   const deleteAt = expired ? new Date(Date.parse(row.expired_at) + settings.graceDays * DAY).toISOString() : null;
-  const user = db.prepare('SELECT expiry_self_extend FROM users WHERE id = ?').get(row.user_id);
+  const user = db.prepare('SELECT expiry_self_extend FROM customers WHERE id = ?').get(row.customer_id);
   return {
     expiresAt: row.expires_at,
     expired,
@@ -144,7 +145,7 @@ export function customerExtend(req, row) {
 let queue = Promise.resolve();
 
 async function notify(row, message) {
-  if (!emailConfigured()) return false;
+  if (!emailConfigured() || !row.email) return false;
   try {
     await sendMail({ to: row.email, ...message });
     return true;
@@ -168,8 +169,8 @@ async function runOnce({ log, now = Date.now() } = {}) {
   const summary = { stopped: [], deleted: [], reminded: [], awaitingAdmin: [], paused: [], blocked: [], upcoming: [], errors: [] };
   try {
     const rows = db.prepare(`
-      SELECT v.*, u.email, u.expiry_self_extend FROM vms v JOIN users u ON u.id = v.user_id
-      WHERE v.expires_at IS NOT NULL AND v.state = 'ready' AND u.deleting = 0`).all();
+      SELECT v.*,COALESCE(c.contact_email,CASE WHEN c.legacy_user_id=v.user_id THEN u.email END) AS email,c.expiry_self_extend FROM vms v JOIN customers c ON c.id=v.customer_id LEFT JOIN users u ON u.id=v.user_id
+      WHERE v.expires_at IS NOT NULL AND v.state = 'ready'`).all();
     if (!rows.length) return summary;
     const guests = await clusterGuests(true);
 

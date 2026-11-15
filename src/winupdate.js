@@ -213,7 +213,8 @@ async function isWindows(path) {
 export async function updateInfo(row) {
   const { path } = await guestOf(row);
   const windows = await isWindows(path);
-  return { available: windows && updatesEnabled(), windows, enabled: updatesEnabled(), run: publicRun(latestRun(row.vmid)) };
+  const run=latestRun(row.vmid);
+  return { available: windows && updatesEnabled(), windows, enabled: updatesEnabled(), run: publicRun(run?.customer_id===row.customer_id?run:null) };
 }
 
 /** Checks, optional snapshot, then starts the update task inside Windows. */
@@ -253,8 +254,8 @@ export async function startUpdates(req, row, { scope = 'security', snapshot = tr
   const r = await agentExec(path, ps(SETUP), 120_000, JSON.stringify({ script: UPDATE_SCRIPT, config: cfg }));
   if (!/started/.test(r.out)) throw new UpdateError(502, `The update task could not be started: ${(r.err || r.out || '').trim().split('\n').pop()}`);
 
-  const id = db.prepare(`INSERT INTO winupdates (vmid, user_id, run_id, scope, auto_restart, snapshot, state)
-    VALUES (?, ?, ?, ?, ?, ?, 'starting')`).run(row.vmid, row.user_id, runId, cfg.scope, cfg.autoRestart ? 1 : 0, snapName).lastInsertRowid;
+  const id = db.prepare(`INSERT INTO winupdates (vmid, user_id, run_id, scope, auto_restart, snapshot, state, customer_id)
+    VALUES (?, ?, ?, ?, ?, ?, 'starting', ?)`).run(row.vmid, req.account.id, runId, cfg.scope, cfg.autoRestart ? 1 : 0, snapName,row.customer_id).lastInsertRowid;
   audit(req, row.vmid, 'winupdate_started', { scope: cfg.scope, snapshot: snapName, autoRestart: cfg.autoRestart });
   return publicRun(db.prepare('SELECT * FROM winupdates WHERE id = ?').get(id));
 }
@@ -281,7 +282,7 @@ export async function refreshRun(run, log) {
     db.prepare("UPDATE winupdates SET finished_at = datetime('now') WHERE id = ?").run(run.id);
     await agentExec(guestPath(guest), ps(CLEANUP), 30_000).catch(() => {});
     const installed = Array.isArray(s.installed) ? s.installed.length : s.installed ? 1 : 0;
-    audit({ account: { id: run.user_id }, ip: 'winupdate' }, run.vmid, state === 'done' ? 'winupdate_finished' : 'winupdate_failed',
+    audit({ account: { id: run.user_id }, customerId:run.customer_id, ip: 'winupdate' }, run.vmid, state === 'done' ? 'winupdate_finished' : 'winupdate_failed',
       { installed, failed: Array.isArray(s.failed) ? s.failed.length : 0, error: friendlyError(s.error) });
     log?.info(`Windows updates on ${run.vmid}: ${state} (${installed} installed)`);
   }

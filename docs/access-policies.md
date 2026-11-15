@@ -6,6 +6,9 @@ VM ownership. Policies start **disabled**. Configure them in **Admin → Permiss
 Users authenticate to the panel; the panel uses its Proxmox service account.
 Individual Proxmox accounts and live Proxmox group lookups are unnecessary.
 
+Customers, membership mappings and domain filters are managed in **Admin → Customers**.
+Read [Customers and access](customer-tenancy.md) for the tenancy model and migration.
+
 ## Identity and resource matching
 
 The panel reads string arrays from the validated **ID token**, by default:
@@ -24,9 +27,10 @@ names. Only the configured issuer's signed Authorization Code + PKCE exchange
 can establish these grants; customer request bodies cannot supply claims.
 
 A policy needs at least one matching group or entitlement from validated SSO
-claims. The email domain filter is optional: `allowedDomains: []` applies no
-additional domain restriction. A nonempty list restricts shared access to those
-exact domains; existing filters remain in place on upgrade. This is separate
+claims within the active customer. Each permission set includes a `customerId`.
+The optional email domain filter belongs to the customer’s membership mapping.
+An empty customer domain list applies no extra filter. Existing global domain
+filters migrate to the imported SSO customer on upgrade. This is separate
 from `OIDC_ALLOWED_DOMAINS`, which controls account creation/linking.
 Each rule can require either list (**any**) or a match from each nonempty list
 (**all**). Within one list any named value suffices. A domain alone gives no
@@ -35,7 +39,9 @@ access. Rule grants are additive; there are no deny rules.
 Each permission set has an `enabled` boolean. It defaults to `true` when omitted
 for compatibility with existing policies. Disabling a set stops its grants;
 another matching set or an independent legacy ownership grant can still allow
-access. The top-level `enabled` switch controls all shared grants.
+access. The top-level `enabled` switch controls claim-based permission sets.
+Manual customer roles remain in effect; disable the customer to revoke all of
+its customer access.
 
 A guest must belong to an exact configured **Proxmox resource pool**, have every
 required tag, and match the optional VM-ID list. Pools, tags and panel display
@@ -106,12 +112,11 @@ The underlying service account also needs access to the source image.
 
 Customers choose one destination when several rules apply. The backend binds
 the pool and trusted tags; clients cannot choose arbitrary pools, tags, storage
-or nodes. The selected rule's limits apply to **all** VMs owned by that creator,
-including personal and assigned VMs. Limits from different rules are never
-summed. They are not an aggregate team quota. Use separate capacity controls if
-a whole team needs one shared budget.
+or nodes. The selected rule's limits count that creator’s VMs within the active customer.
+Limits from different rules are never summed. Customer shared quotas provide an
+additional aggregate budget across all creators and discovered customer VMs.
 
-The creator remains recorded for usage, audit and expiry. Policy-created VMs
+The creator remains recorded for usage and audit. Expiry belongs to the customer. Policy-created VMs
 have `access_managed=1`: creator ownership does not bypass expired/removed OIDC
 grants. A peer with a matching rule can operate the VM. Legacy assignments keep
 their existing owner access. Existing per-customer expiry settings also apply to
@@ -129,7 +134,7 @@ node selector, load balancing, or independent multi-cluster connection here.
 | Any eligible VM/LXC, including guests never assigned in the panel | View, graphs, power, browser console, snapshot create/delete/rollback |
 | Panel-assigned guests | Above, plus explicitly granted backup list/create/delete/file access and Windows update actions, subject to native feature settings |
 | Creator's policy-managed server | Above, plus explicitly granted resize, delete and expiry extension; resize also requires the original creation destination to remain available |
-| Other owner's server | Owner lifecycle controls remain unavailable |
+| Another creator’s server in the same customer | Lifecycle controls require customer administrator membership and the applicable supported operation |
 | Policy-managed server | Reinstall, backup restoration, schedules and Tailscale are unavailable; their background lifecycle needs further policy integration |
 
 Native settings can impose additional restrictions. Granting an action never
@@ -180,22 +185,13 @@ Selection data never replaces the separate live authorization checks.
 An illustrative (not production) policy is in
 [access-policy.example.json](access-policy.example.json).
 
-Back up SQLite before upgrading. The migration is additive (`vms.access_managed`
-and `oidc_authorizations`). Test on a copied database, verify least-privilege
-Proxmox API access, and test two groups plus an unmapped user before enabling the
-policy. Configure offered images, real destination storage, network behavior,
-quotas and expiry deliberately. Upgrades preserve the top-level enabled state
-and existing domain filters. Existing rules without an `enabled` field remain
-enabled within that policy; new policies still start disabled.
+Back up SQLite before upgrading and follow the [customer migration and rollback
+instructions](customer-tenancy.md#upgrade). Existing rules keep their enabled
+state and move to an explicit imported customer; existing owner assignments move
+to personal customers. Policy writes should include a `customerId` on every rule
+and leave the legacy global `allowedDomains` empty. Replace the example customer
+ID with the real customer ID before importing the example policy.
 
-Earlier fork images do not honor per-set `enabled: false`. Before downgrading,
-disable the top-level policy or remove disabled rules so a downgrade cannot
-reactivate those grants. Earlier images also require a nonempty domain filter.
-
-**Disable the policy to revoke shared grants. Do not roll back to an unmodified
-upstream image while policy-created VM rows remain:** upstream ignores
-`access_managed` and would grant their recorded creators native owner access.
-For an image rollback, stop the panel, restore a pre-extension database backup
-or reconcile/unassign managed rows under maintenance first, and separately
-reconcile VMs created since that backup. Preserve the JWT secret with backups.
-A database restore alone does not delete or undo Proxmox guests.
+**Never run an older panel image against a migrated tenancy database.** Restore
+the pre-upgrade image and database together under maintenance. A database restore
+does not undo or delete Proxmox guests created since that backup.

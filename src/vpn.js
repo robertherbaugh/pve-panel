@@ -18,6 +18,7 @@
 import crypto from 'node:crypto';
 import QRCode from 'qrcode';
 import { db, audit } from './db.js';
+import { personalCustomerId,requireCustomer } from './tenancy.js';
 import { config } from './config.js';
 import { locateGuest, guestPath } from './pve.js';
 import { agentExec } from './agent.js';
@@ -71,7 +72,7 @@ async function gatewayPublicKey(path) {
 function allDevices() {
   return db.prepare(`
     SELECT d.*, n.idx FROM vpn_devices d
-    JOIN networks n ON n.user_id = d.user_id
+    JOIN networks n ON n.customer_id = d.customer_id
     ORDER BY n.idx, d.host
   `).all();
 }
@@ -157,7 +158,7 @@ async function handshakes() {
 // ---- Devices ----------------------------------------------------------------
 
 function present(d, hs) {
-  const idx = d.idx ?? networkOf(d.user_id)?.idx;
+  const idx = d.idx ?? networkOf(d.user_id,d.customer_id)?.idx;
   return {
     id: d.id,
     name: d.name,
@@ -167,17 +168,17 @@ function present(d, hs) {
   };
 }
 
-export async function listDevices(userId) {
+export async function listDevices(userId,customerId=personalCustomerId(userId)) {
   const rows = db.prepare(`
-    SELECT d.*, n.idx FROM vpn_devices d JOIN networks n ON n.user_id = d.user_id
-    WHERE d.user_id = ? ORDER BY d.host
-  `).all(userId);
+    SELECT d.*, n.idx FROM vpn_devices d JOIN networks n ON n.customer_id = d.customer_id
+    WHERE d.customer_id = ? ORDER BY d.host
+  `).all(customerId);
   const hs = rows.length ? await handshakes() : null;
   return rows.map((d) => present(d, hs));
 }
 
-export function vpnInfoFor(userId) {
-  const net = networkOf(userId);
+export function vpnInfoFor(userId,customerId=personalCustomerId(userId)) {
+  const net = networkOf(userId,customerId);
   return {
     enabled: config.vpn.enabled && !!net,
     maxDevices,
@@ -206,10 +207,12 @@ PersistentKeepalive = 25
 export async function addDevice(req, name) {
   if (!config.vpn.enabled) throw new VpnError(404, 'VPN access is not available');
   const userId = req.account.id;
-  const net = networkOf(userId);
+  const customer=requireCustomer(req);
+  if(!['operator','admin'].includes(customer.role)) throw new VpnError(403,'VPN management requires a customer operator');
+  const net = networkOf(userId,customer.id);
   if (!net) throw new VpnError(409, 'Create a server first. Your private network is set up with it.');
 
-  const count = db.prepare('SELECT COUNT(*) AS n FROM vpn_devices WHERE user_id = ?').get(userId).n;
+  const count = db.prepare('SELECT COUNT(*) AS n FROM vpn_devices WHERE customer_id = ?').get(customer.id).n;
   if (count >= maxDevices) {
     throw new VpnError(409, `You can have up to ${maxDevices} VPN devices. Remove one to add another.`);
   }
@@ -217,14 +220,14 @@ export async function addDevice(req, name) {
   const path = await gatewayPath();
   const gatewayKey = await gatewayPublicKey(path);
 
-  const used = new Set(db.prepare('SELECT host FROM vpn_devices WHERE user_id = ?').all(userId).map((r) => r.host));
+  const used = new Set(db.prepare('SELECT host FROM vpn_devices WHERE customer_id = ?').all(customer.id).map((r) => r.host));
   let host = 2;
   while (used.has(host)) host += 1;
 
   const keys = generateKeyPair();
   const { lastInsertRowid } = db.prepare(
-    'INSERT INTO vpn_devices (user_id, name, public_key, host) VALUES (?, ?, ?, ?)'
-  ).run(userId, name, keys.publicKey, host);
+    'INSERT INTO vpn_devices (user_id, name, public_key, host,customer_id) VALUES (?, ?, ?, ?,?)'
+  ).run(userId, name, keys.publicKey, host,customer.id);
   const id = Number(lastInsertRowid);
 
   try {
@@ -235,7 +238,7 @@ export async function addDevice(req, name) {
   }
 
   // Servers created before VPN was switched on get their VPN firewall rules now.
-  await addVpnRulesToServers(userId, net).catch((err) => req.log?.warn({ err }, 'adding VPN rules failed'));
+  await addVpnRulesToServers(customer.id, net).catch((err) => req.log?.warn({ err }, 'adding VPN rules failed'));
 
   const address = `${vpnPrefix}.${net.idx}.${host}`;
   const conf = clientConfig({ privateKey: keys.privateKey, address, gatewayKey, net });
@@ -248,10 +251,10 @@ export async function addDevice(req, name) {
   };
 }
 
-async function addVpnRulesToServers(userId, net) {
+async function addVpnRulesToServers(customerId, net) {
   const rows = db.prepare(
-    "SELECT vmid FROM vms WHERE user_id = ? AND created_by_customer = 1 AND state = 'ready'"
-  ).all(userId);
+    "SELECT vmid FROM vms WHERE customer_id = ? AND created_by_customer = 1 AND state = 'ready'"
+  ).all(customerId);
   for (const { vmid } of rows) {
     const guest = await locateGuest(vmid).catch(() => null);
     if (guest) await ensureVpnRules(guestPath(guest), net);
@@ -260,9 +263,11 @@ async function addVpnRulesToServers(userId, net) {
 
 /** Removes a device. Customers can only remove their own; admins any. */
 export async function removeDevice(req, id, { asAdmin = false } = {}) {
+  const customer=asAdmin?null:requireCustomer(req);
+  if(customer&&!['operator','admin'].includes(customer.role)) throw new VpnError(403,'VPN management requires a customer operator');
   const row = asAdmin
     ? db.prepare('SELECT * FROM vpn_devices WHERE id = ?').get(id)
-    : db.prepare('SELECT * FROM vpn_devices WHERE id = ? AND user_id = ?').get(id, req.account.id);
+    : db.prepare('SELECT * FROM vpn_devices WHERE id = ? AND customer_id = ?').get(id, customer.id);
   if (!row) throw new VpnError(404, 'Device not found');
 
   db.prepare('DELETE FROM vpn_devices WHERE id = ?').run(id);
@@ -270,8 +275,8 @@ export async function removeDevice(req, id, { asAdmin = false } = {}) {
     await syncGateway();
   } catch (err) {
     // Keep the database and the gateway consistent: put it back and report.
-    db.prepare('INSERT INTO vpn_devices (id, user_id, name, public_key, host, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(row.id, row.user_id, row.name, row.public_key, row.host, row.created_at);
+    db.prepare('INSERT INTO vpn_devices (id, user_id, name, public_key, host, created_at,customer_id) VALUES (?, ?, ?, ?, ?, ?,?)')
+      .run(row.id, row.user_id, row.name, row.public_key, row.host, row.created_at,row.customer_id);
     throw err;
   }
   audit(req, null, asAdmin ? 'admin_vpn_device_remove' : 'vpn_device_remove', { name: row.name });
@@ -290,9 +295,9 @@ export async function adminOverview() {
     status.reachable = false;
     status.error = err.message;
   }
-  const emails = new Map(allNetworks().map((n) => [n.userId, n.email]));
+  const emails = new Map(allNetworks().map((n) => [n.customerId, n.email]));
   const hs = status.reachable ? await handshakes() : null;
-  const devices = allDevices().map((d) => ({ ...present(d, hs), email: emails.get(d.user_id) ?? null }));
+  const devices = allDevices().map((d) => ({ ...present(d, hs), email: emails.get(d.customer_id) ?? null,customerId:d.customer_id }));
   return { status, devices };
 }
 

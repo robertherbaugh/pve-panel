@@ -8,6 +8,7 @@ import * as oidc from './oidc.js';
 import { checkInvitation, acceptInvitation } from './invite.js';
 import * as passkeys from './passkeys.js';
 import { rememberAuthorization, forgetAuthorization } from './access.js';
+import { customerContext, rememberMemberships } from './tenancy.js';
 
 // Password sign-ins per minute and address. Only the test suite raises it (all
 // browser tests sign in from 127.0.0.1 within a minute).
@@ -20,7 +21,7 @@ const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 12);
 
 const findByEmail = db.prepare('SELECT * FROM users WHERE email = ?');
 const findById = db.prepare(`
-  SELECT id, email, is_admin, can_create, max_servers, max_cores, max_memory_mb, max_disk_gb, deleting
+  SELECT id, email, is_admin, can_create, max_servers, max_cores, max_memory_mb, max_disk_gb, deleting, disabled
   FROM users WHERE id = ?
 `);
 
@@ -43,6 +44,8 @@ async function authPlugin(app, { scope }) {
   });
 
   app.decorateRequest('account', null);
+  app.decorateRequest('customer', null);
+  app.decorateRequest('selectedCustomerId', null);
 
   app.decorate('authenticate', async (req, reply) => {
     try {
@@ -53,10 +56,22 @@ async function authPlugin(app, { scope }) {
     if (req.user.scope !== scope) return reply.code(401).send({ error: 'Sign in to continue' });
     // Re-check the database so deleted users and revoked admins lose access immediately.
     const account = findById.get(req.user.sub);
-    if (!account || account.deleting || (adminOnly && !account.is_admin)) {
+    if (!account || account.deleting || account.disabled || (adminOnly && !account.is_admin)) {
       return reply.code(401).send({ error: 'Sign in to continue' });
     }
     req.account = account;
+    if(!adminOnly) {
+      const raw=req.cookies.panel_customer;
+      if(raw) {
+        try {
+          const ctx=app.jwt.verify(raw);
+          if(ctx.scope!=='customer-context'||ctx.sub!==account.id||!Number.isSafeInteger(ctx.customerId)) throw new Error('Invalid context');
+          req.selectedCustomerId=ctx.customerId;
+        } catch { req.selectedCustomerId=-1; }
+      }
+      req.customer=customerContext(req);
+      if(req.customer?.legacy_user_id!==account.id || req.customer.pools.length && !req.customer.pools.includes(config.pve.pool)) req.account={...account,can_create:0};
+    }
   });
 
   app.decorate('requireAdmin', app.authenticate);
@@ -68,6 +83,7 @@ async function authPlugin(app, { scope }) {
   const me = (u) => ({ id: u.id, email: u.email, isAdmin: !!u.is_admin });
 
   async function startSession(req, reply, user, how) {
+    if(user.disabled) return reply.code(401).send({error:'Sign in to continue'});
     const token = await reply.jwtSign({ sub: user.id, scope, ...(req.oidcAuthorizationId ? { az: req.oidcAuthorizationId } : {}) });
     req.account = user;
     audit(req, null, adminOnly ? 'admin_login' : 'login', how === 'passkey' ? { passkey: true } : how ? { twoFactor: how } : null);
@@ -88,7 +104,7 @@ async function authPlugin(app, { scope }) {
       const claim = app.jwt.verify(req.cookies[pendingCookie] ?? '');
       if (claim.scope !== `${scope}:2fa` || claim.stage !== stage) return null;
       const user = findByEmail.get(db.prepare('SELECT email FROM users WHERE id = ?').get(claim.sub)?.email ?? '');
-      if (!user || user.deleting || (adminOnly && !user.is_admin)) return null;
+      if (!user || user.deleting || user.disabled || (adminOnly && !user.is_admin)) return null;
       req.oidcAuthorizationId = claim.az;
       return user;
     } catch {
@@ -118,7 +134,7 @@ async function authPlugin(app, { scope }) {
     const ok = await bcrypt.compare(password, user?.password_hash ?? DUMMY_HASH);
 
     // Non-admins get the same answer as a wrong password on the admin port.
-    if (!user || !ok || user.deleting || (adminOnly && !user.is_admin)) {
+    if (!user || !ok || user.deleting || user.disabled || (adminOnly && !user.is_admin)) {
       audit(req, null, adminOnly ? 'admin_login_failed' : 'login_failed', { email });
       return reply.code(401).send({ error: 'Email or password is incorrect' });
     }
@@ -288,7 +304,7 @@ async function authPlugin(app, { scope }) {
       }
       const { user, linked, created } = result;
       let az;
-      try { az = rememberAuthorization(user, claims); }
+      try { az = rememberAuthorization(user, claims); rememberMemberships(user,claims); }
       catch (err) { return fail(req, reply, 'failed', err.message); }
       const actor = { account: user, ip: req.ip };
       if (created) audit(actor, null, 'sso_account_created', { email: user.email, issuer: claims.iss });
@@ -445,7 +461,7 @@ async function authPlugin(app, { scope }) {
         forgetAuthorization(req);
       }
     } catch { /* clearing an absent/expired cookie still succeeds */ }
-    return reply.clearCookie(cookieName, { path: '/' }).clearCookie(pendingCookie, { path: '/' }).code(204).send();
+    return reply.clearCookie(cookieName, { path: '/' }).clearCookie(pendingCookie, { path: '/' }).clearCookie('panel_customer',{path:'/'}).code(204).send();
   });
 
   app.get('/api/auth/me', { preHandler: app.authenticate }, async (req) => ({

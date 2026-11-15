@@ -2,6 +2,7 @@ import { icon } from '/shared/icons.js';
 import { renderSecurity } from '/shared/twofa.js';
 import { renderPasskeys } from '/shared/passkeys.js';
 import { applyScheme } from '/shared/icons.js';
+import { renderCustomers } from './customers.js';
 import { renderAccessPolicy } from './access-policy.js';
 
 // Administration area: assign servers, manage customers, read the activity log.
@@ -125,7 +126,9 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
     if (!quiet) body.innerHTML = '<p class="muted">Loading…</p>';
     try {
       if (st.tab === 'servers') {
-        [st.vms, st.users] = await Promise.all([api('/api/admin/vms'), api('/api/admin/users')]);
+        [st.vms, st.users, st.customerData] = await Promise.all([api('/api/admin/vms'), api('/api/admin/users'),api('/api/admin/customers')]);
+      } else if (st.tab === 'customers') {
+        [st.customerData,st.users]=await Promise.all([api('/api/admin/customers'),api('/api/admin/users')]);
       } else if (st.tab === 'users') {
         [st.users, st.email] = await Promise.all([api('/api/admin/users'), api('/api/admin/settings/email')]);
         if (!quiet) setTimeout(watchDeletions);
@@ -167,7 +170,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
 
   // ---- shell ------------------------------------------------------------
   function render() {
-    const tabs = [['servers', 'Servers', 'server'], ['users', 'Customers', 'users'], ['permissions', 'Permissions', 'shield'], ['templates', 'Templates', 'layers'], ['vpn', 'VPN', 'shield'],
+    const tabs = [['servers', 'Servers', 'server'], ['customers','Customers','users'], ['users', 'Users', 'user'], ['permissions', 'Permissions', 'shield'], ['templates', 'Templates', 'layers'], ['vpn', 'VPN', 'shield'],
       ['activity', 'Activity', 'pulse'], ['account', 'Your account', 'user'], ['settings', 'Settings', 'gear'], ['setup', 'Setup check', 'check'], ['about', 'About', 'info']];
     const count = (id) => (id === 'setup' && st.setupProblems ? ` <span class="tab-count" title="Problems found">${st.setupProblems}</span>` : '');
     root.innerHTML = `
@@ -186,6 +189,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
     disposeAccessPolicy = null;
     if (st.tab === 'servers') renderServers();
     if (st.tab === 'users') renderUsers();
+    if (st.tab === 'customers') disposeAccessPolicy=renderCustomers(root.querySelector('#admin-body'),{data:st.customerData,users:st.users,api,esc,toast,fail,confirmAction,onSave:saved=>{st.customerData=saved;}});
     if (st.tab === 'templates') renderTemplates();
     if (st.tab === 'vpn') renderVpn();
     if (st.tab === 'activity') renderActivity();
@@ -300,7 +304,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
   }
 
   function renderServerRows() {
-    const assigned = st.vms.filter((v) => v.userId).length;
+    const assigned = st.vms.filter((v) => v.customerId).length;
     root.querySelector('#vm-summary').textContent =
       `${st.vms.length} servers in the cluster, ${assigned} assigned to customers.`;
 
@@ -308,13 +312,12 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
     const rows = st.vms.filter((v) => !q
       || String(v.vmid).includes(q)
       || v.name.toLowerCase().includes(q)
-      || (v.owner ?? '').toLowerCase().includes(q)
+      || (v.customerName ?? v.owner ?? '').toLowerCase().includes(q)
       || (v.label ?? '').toLowerCase().includes(q));
 
     const options = (selected) => `
       <option value="">Not assigned</option>
-      ${st.users.map((u) =>
-        `<option value="${u.id}" ${u.id === selected ? 'selected' : ''}>${esc(u.email)}</option>`).join('')}`;
+      ${st.customerData.customers.filter(c=>c.enabled||c.id===selected).map(c=>`<option value="${c.id}" ${c.id===selected?'selected':''}>${esc(c.name)}</option>`).join('')}`;
 
     root.querySelector('#vm-rows').innerHTML = rows.length ? rows.map((v) => `
       <tr data-vmid="${v.vmid}">
@@ -333,7 +336,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
         <td class="muted">${esc(v.node ?? '–')}</td>
         <td>
           <select data-owner aria-label="Customer for server ${v.vmid}" ${v.status === 'missing' && !v.userId ? 'disabled' : ''}>
-            ${options(v.userId)}
+            ${options(v.customerId)}
           </select>
         </td>
         <td>
@@ -350,23 +353,23 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
     const vm = st.vms.find((v) => v.vmid === vmid);
     const select = row.querySelector('[data-owner]');
     const input = row.querySelector('[data-label]');
-    const userId = select.value ? Number(select.value) : null;
+    const customerId = select.value ? Number(select.value) : null;
     const label = input.value.trim();
 
     select.disabled = input.disabled = true;
     try {
-      if (!userId) {
+      if (!customerId) {
         await api(`/api/admin/vms/${vmid}`, { method: 'DELETE' });
-        Object.assign(vm, { userId: null, owner: null, label: null });
+        Object.assign(vm, { userId: null, customerId:null,customerName:null, owner: null, label: null });
         toast(`Server ${vmid} unassigned`);
         if (vm.status === 'missing') st.vms = st.vms.filter((v) => v !== vm);
       } else {
         const res = await api(`/api/admin/vms/${vmid}`, {
           method: 'PUT',
-          body: label ? { userId, label } : { userId },
+          body: label ? { customerId, label } : { customerId },
         });
-        const ownerChanged = vm.userId !== userId;
-        Object.assign(vm, { userId, owner: res.owner, label: res.label });
+        const ownerChanged = vm.customerId !== customerId;
+        Object.assign(vm, { userId:res.userId,customerId,customerName:res.customerName, owner: res.owner, label: res.label });
         toast(ownerChanged ? `Server ${vmid} assigned to ${res.owner}` : 'Name saved');
       }
     } catch (err) {
@@ -399,7 +402,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
       </div>` : '';
 
     root.querySelector('#admin-body').innerHTML = `
-      <h2 class="h2">Add a customer</h2>
+      <h2 class="h2">Add a user</h2><p class="muted">Manage identities here. Add users to organizations from the Customers tab.</p>
       <form id="user-form" class="user-form" autocomplete="off">
         <label>Email <input name="email" type="email" required maxlength="254"></label>
         <label id="pw-field">Password
@@ -408,7 +411,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
             <button type="button" class="btn" data-generate>Generate</button>
           </span>
         </label>
-        <button class="btn primary">Add customer</button>
+        <button class="btn primary">Add user</button>
         <label class="check">
           <input type="checkbox" name="isAdmin">
           <span>Administrator <span class="muted">Can open this area and manage all customers and servers.</span></span>
@@ -428,49 +431,9 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
       </form>
       ${note}
 
-      <h2 class="h2">Customers</h2>
-      <div class="table-wrap">
-        <table class="table">
-          <thead><tr><th>Email</th><th>Role</th><th>2FA</th><th>Servers</th><th>Can create servers</th><th>Network</th><th>Added</th><th><span class="sr-only">Actions</span></th></tr></thead>
-          <tbody>
-            ${st.users.map((u) => {
-              const self = u.id === me.id;
-              return `
-              <tr data-user="${u.id}">
-                <td>${esc(u.email)}${self ? ' <span class="muted">(you)</span>' : ''}${u.ssoLinked ? ' <span class="tag" title="Linked to single sign-on">SSO</span>' : ''}${u.passkeyCount ? ` <span class="tag" title="${u.passkeyCount} passkey${u.passkeyCount > 1 ? 's' : ''}">Passkey</span>` : ''}${u.expiryMode ? ` <span class="tag" title="${esc(expiryRuleText(u))}">${icon('clock', { size: 12 })} Expiry</span>` : ''}${
-                  u.invite?.status === 'pending' ? ` <span class="tag" title="Link valid until ${esc(new Date(u.invite.expires).toLocaleString())}">Invitation pending</span>`
-                  : u.invite?.status === 'expired' ? ' <span class="tag warn">Invitation expired</span>'
-                  : u.invite?.status === 'sent' ? ' <span class="tag">Invited</span>' : ''}</td>
-                <td>${u.isAdmin ? 'Administrator' : 'Customer'}</td>
-                <td>${u.totpEnabled
-                  ? `<span class="pill pill-running">On</span>${u.totpRequired ? ' <span class="muted small">required</span>' : ''}`
-                  : u.totpRequired ? '<span class="pill pill-busy" title="Set up at the next sign-in">Required</span>'
-                  : '<span class="pill">Off</span>'}</td>
-                <td>${u.servers ? `<button class="linklike" data-show-servers="${esc(u.email)}">${u.servers}</button>` : '0'}</td>
-                <td>${u.canCreate
-                  ? `Yes <span class="muted small">(up to ${u.maxServers} servers, ${u.maxCores} cores, ${gb(u.maxMemoryMb)}, ${u.maxDiskGb} GB disk)</span>`
-                  : '<span class="muted">No</span>'}</td>
-                <td>${u.network
-                  ? `<span class="mono">${esc(u.network.subnet)}</span> <span class="muted small">${esc(u.network.vnet)}</span>`
-                  : '<span class="muted">–</span>'}</td>
-                <td class="muted">${utc(u.createdAt).toLocaleDateString()}</td>
-                <td class="actions">${u.deleting ? (u.deletionError ? `
-                  <span class="pill pill-failed" title="${esc(u.deletionError)}">Deletion failed</span>
-                  <button class="btn danger" data-delete-user>Retry</button>` : `
-                  <span class="pill pill-busy">Deleting…</span>`) : `
-                  ${u.invite && st.email?.configured ? '<button class="btn" data-resend-invite>Resend invitation</button>' : ''}
-                  <button class="btn" data-limits>Limits</button>
-                  <button class="btn" data-twofa>Sign-in</button>
-                  <button class="btn" data-reset>Reset password</button>
-                  ${self ? '' : `<button class="btn" data-toggle-admin>${u.isAdmin ? 'Remove admin' : 'Make admin'}</button>`}
-                  ${self ? '' : '<button class="btn danger" data-delete-user>Delete</button>'}`}
-                </td>
-              </tr>
-              ${u.deleting && u.deletionError ? `<tr class="row-warn"><td colspan="8" class="small">Deleting ${esc(u.email)} stopped: ${esc(u.deletionError)}</td></tr>` : ''}`;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>`;
+      <div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Platform role</th><th>Customers</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+        ${st.users.map(u=>`<tr data-user="${u.id}"><td>${esc(u.email)}${u.id===me.id?' (you)':''}${u.ssoLinked?' <span class="tag">SSO</span>':''}</td><td>${u.isAdmin?'Administrator':'User'}</td><td>${[...new Set(u.customers.map(c=>c.name))].map(n=>`<span class="badge">${esc(n)}</span>`).join(' ')||'<span class="muted">No memberships</span>'}</td><td>${u.disabled?'Disabled':'Active'}</td><td class="actions"><button class="btn" data-twofa>Sign-in</button><button class="btn" data-reset>Reset password</button>${u.canCreate?'<button class="btn" data-limits>Personal plan</button>':''}${u.id!==me.id?`<button class="btn" data-toggle-admin>${u.isAdmin?'Remove admin':'Make admin'}</button><button class="btn ${u.disabled?'':'danger'}" data-disable-user>${u.disabled?'Enable':'Disable'}</button>`:''}</td></tr>`).join('')}
+      </tbody></table></div>`;
   }
 
   function watchDeletions() {
@@ -479,79 +442,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
     }
   }
 
-  /** Confirmation dialog listing everything that will be deleted. */
-  async function deleteCustomer(user) {
-    let plan;
-    try {
-      plan = await api(`/api/admin/users/${user.id}/deletion-plan`);
-      if (!st.vms.length) st.vms = await api('/api/admin/vms').catch(() => []);
-    } catch (err) { return fail(err); }
-    const dialog = document.getElementById('delete-user');
-    const form = document.getElementById('delete-user-form');
-    const created = plan.servers.filter((x) => x.createdByCustomer);
-    const assigned = plan.servers.filter((x) => !x.createdByCustomer);
-    const names = new Map(st.vms.map((v) => [v.vmid, v.name]));
-    const item = (x) => `<li><span class="mono">${x.vmid}</span> ${esc(x.label || names.get(x.vmid) || '')}</li>`;
 
-    document.getElementById('du-title').textContent = `Delete ${user.email}?`;
-    document.getElementById('du-plan').innerHTML = `
-      <p>This deletes the account and everything that belongs to it. It can't be undone.</p>
-      <ul class="plan-list">
-        ${created.length ? `<li><strong>${created.length} server${created.length > 1 ? 's' : ''} the customer created</strong> are stopped and deleted with their disks and snapshots:<ul>${created.map(item).join('')}</ul></li>` : ''}
-        ${assigned.length ? `<li><strong>${assigned.length} server${assigned.length > 1 ? 's' : ''} you assigned</strong>:<ul>${assigned.map(item).join('')}</ul></li>` : ''}
-        ${plan.vpnDevices ? `<li><strong>${plan.vpnDevices} VPN device${plan.vpnDevices > 1 ? 's' : ''}</strong> lose access.</li>` : ''}
-        ${plan.network ? `<li><strong>The private network</strong> <span class="mono">${esc(plan.network.vnet)}</span> (<span class="mono">${esc(plan.network.subnet)}</span>) is removed from Proxmox${plan.othersInNetwork.length ? ', unless you keep it (see below)' : ''}.</li>` : ''}
-        ${!plan.servers.length && !plan.vpnDevices && !plan.network ? '<li>No servers, VPN devices or network.</li>' : ''}
-      </ul>`;
-    const others = plan.othersInNetwork ?? [];
-    if (others.length) {
-      document.getElementById('du-plan').insertAdjacentHTML('beforeend', `
-        <div class="notice warn">
-          <p><strong>${others.length === 1 ? 'This server is' : 'These servers are'} still in the customer's network
-            but no longer theirs:</strong></p>
-          <ul class="plan-list">${others.map((g) => `<li><span class="mono">${g.vmid}</span> ${esc(g.name)}
-            <span class="muted">${g.owner ? `assigned to ${esc(g.owner)}` : 'not assigned'}</span></li>`).join('')}</ul>
-          <p class="small">They are not deleted. Proxmox can't remove a network that is in use, so either keep the
-            network, or first move ${others.length === 1 ? 'it' : 'them'} to another network (Hardware, Network Device).</p>
-        </div>`);
-    }
-    const keepNetWrap = document.getElementById('du-keepnet-wrap');
-    keepNetWrap.hidden = !others.length;
-    form.keepNetwork.checked = others.length > 0;
-
-    const keepWrap = document.getElementById('du-keep-wrap');
-    keepWrap.hidden = !assigned.length;
-    form.keepAssigned.checked = false;
-    form.confirm.value = '';
-    const ok = document.getElementById('du-ok');
-    ok.disabled = true;
-    const matches = () => form.confirm.value.trim().toLowerCase() === user.email.toLowerCase();
-    form.confirm.oninput = () => { ok.disabled = !matches(); };
-    form.confirm.onkeydown = (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); if (matches()) dialog.close('ok'); }
-    };
-    dialog.returnValue = '';
-    dialog.showModal();
-    form.confirm.focus();
-
-    const confirmed = await new Promise((resolve) => {
-      dialog.addEventListener('close', () => resolve(dialog.returnValue === 'ok' && matches()), { once: true });
-    });
-    if (!confirmed) return;
-    try {
-      const q = new URLSearchParams();
-      if (form.keepAssigned.checked) q.set('keepAssigned', 'true');
-      if (form.keepNetwork.checked && !keepNetWrap.hidden) q.set('keepNetwork', 'true');
-      const qs = q.toString();
-      await api(`/api/admin/users/${user.id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' });
-      toast(`Deleting ${user.email}`);
-      st.users = await api('/api/admin/users');
-      renderUsers();
-      watchDeletions();
-    } catch (err) { fail(err); }
-  }
-
-  /** Require / not require 2FA for a user, or reset it (lost phone). */
   async function editTwoFactor(user) {
     const dialog = document.getElementById('twofa-admin');
     const form = document.getElementById('twofa-admin-form');
@@ -618,7 +509,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
     const button = form.querySelector('.btn.primary');
     button.disabled = true;
     try {
-      const r = await api('/api/admin/users', { method: 'POST', body: { email, password, isAdmin, requireTotp, invite } });
+      const r = await api('/api/admin/users', { method: 'POST', body: { email, password, isAdmin, requireTotp, invite, createPersonalCustomer:false } });
       st.newUser = { email, password: generated ? password : null, invited: r.invited, inviteError: r.inviteError };
       st.users = await api('/api/admin/users');
       renderUsers();
@@ -1647,8 +1538,10 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
       } catch (err) { fail(err); }
     }
 
-    if (t.hasAttribute('data-delete-user')) {
-      deleteCustomer(user);
+    if(t.hasAttribute('data-disable-user')) {
+      const user=st.users.find(u=>u.id===Number(t.closest('[data-user]').dataset.user));
+      if(!await confirmAction(`${user.disabled?'Enable':'Disable'} ${user.email}? Customer resources and memberships are preserved.`,user.disabled?'Enable user':'Disable user')) return;
+      try{await api(`/api/admin/users/${user.id}/${user.disabled?'enable':'disable'}`,{method:'POST'});await load();toast('User updated');}catch(err){fail(err);}return;
     }
   });
 

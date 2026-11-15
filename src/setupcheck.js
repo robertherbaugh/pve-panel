@@ -496,7 +496,7 @@ async function checkNetworks(c, ctx) {
 
   // Every customer-created server: NIC firewall flag, VM firewall on, panel rules present
   const rows = db.prepare(`
-    SELECT v.vmid, n.vnet FROM vms v JOIN networks n ON n.user_id = v.user_id
+    SELECT v.vmid, n.vnet FROM vms v JOIN networks n ON n.customer_id = v.customer_id
     WHERE v.created_by_customer = 1 AND v.state = 'ready'`).all();
   const broken = [];
   let checked = 0;
