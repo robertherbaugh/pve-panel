@@ -180,6 +180,7 @@ export async function startMockPve({ port = 0 } = {}) {
   const srv = http.createServer(async (req, res) => {
     const u = new URL(req.url, 'http://x'); const p = u.pathname.replace('/api2/json','');
     if (req.headers.authorization !== 'PVEAPIToken=panel@pve!panel=x') return send(res, null, 401);
+    cluster.observedRequests?.push({ method: req.method, path: p });
     // like Proxmox: the pool of a guest is only shown with Pool.Audit on that pool
     if (p === '/cluster/resources') return send(res, [...vms.values()].map(({cfg, pool, ...v}) => ({...v, tags: cfg?.tags ?? v.tags, ...(pool && 'Pool.Audit' in effective(`/pool/${pool}`) ? { pool } : {}), id:`${v.type}/${v.vmid}`, cpu:0.05, mem:v.maxmem/4, uptime: v.status==='running'?600:0})));
     if (p === '/version') return send(res, { version: '9.0.6', release: '9.0', repoid: 'mock' });
@@ -206,8 +207,13 @@ export async function startMockPve({ port = 0 } = {}) {
     if (p === '/__vms') return send(res, [...vms.keys()]);
     if (p.startsWith('/__clearfw/')) { const v = vms.get(Number(p.split('/')[2])); v.fwRules = (v.fwRules ?? []).filter(r => r.type !== 'out'); return send(res, 'cleared'); }
     if (p === '/cluster/nextid') { const want = u.searchParams.get('vmid'); if (want) return vms.has(Number(want)) ? send(res,null,400,`VM ${want} already exists`) : send(res, want); let id=100; while (vms.has(id)) id++; return send(res, String(id)); }
-    if (p === '/nodes') return send(res, [{ node: 'pve1', status: 'online' }]);
+    if (p === '/nodes') return cluster.inventoryDenied ? send(res, null, 403, 'Permission denied') : send(res, cluster.nodes ?? [{ node: 'pve1', status: 'online' }]);
     if (/^\/nodes\/[^/]+\/storage$/.test(p)) {
+      const node = decodeURIComponent(p.split('/')[2]);
+      if (cluster.storageInventories && node in cluster.storageInventories) {
+        const inventory = cluster.storageInventories[node];
+        return inventory === null ? send(res, null, 403, 'Permission denied') : send(res, inventory);
+      }
       if (u.searchParams.get('content') === 'vztmpl') return send(res, [{ storage: 'local', type: 'dir', content: 'vztmpl,iso,backup', active: 1, shared: 0 }]);
       if (u.searchParams.get('content') === 'rootdir') return send(res, [{ storage: 'local-lvm', type: 'lvmthin', content: 'rootdir,images', active: 1 }, { storage: 'VMStorage', type: 'zfspool', content: 'rootdir,images', active: 1 }]);
       if (u.searchParams.get('content') === 'backup') return send(res, [{ storage: 'pbs', type: 'pbs', content: 'backup', active: 1 }, { storage: 'local', type: 'dir', content: 'backup,iso,vztmpl', active: 1 }]);

@@ -141,6 +141,7 @@ PVE Panel was built with substantial help from an AI assistant (**Claude by Anth
 - Create and manage customer accounts
 - Assign existing Proxmox VMs or containers to users
 - Configure provisioning quotas and limits
+- Prepare VM sizes, Basic/Standard/Fast storage mappings and customer add-ons in the [compute catalog preview](docs/compute-catalog.md)
 - Publish selected templates
 - Start, stop, restart and delete customer-owned servers
 - Review provisioning jobs and failures

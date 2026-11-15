@@ -14,6 +14,7 @@ import { startExpiryScheduler } from './expiry.js';
 import { currentScheme } from './appearance.js';
 import { initializeBranding, publicBranding, brandingFiles } from './branding.js';
 import brandingRoutes from './routes/branding.js';
+import computeCatalogRoutes from './routes/compute-catalog.js';
 import { startUpdateTracker } from './winupdate.js';
 import { startSetupCheckScheduler } from './setupcheck.js';
 import { startBackupScheduler } from './backups.js';
@@ -131,6 +132,7 @@ const admin = await buildServer('admin', async (app) => {
   await app.register(adminCustomerRoutes);
   await app.register(adminRoutes);
   await app.register(brandingRoutes);
+  await app.register(computeCatalogRoutes);
 
   await app.register(fastifyStatic, { root: web('admin') });
   await app.register(fastifyStatic, { root: web('shared'), prefix: '/shared/', decorateReply: false });

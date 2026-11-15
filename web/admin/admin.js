@@ -5,6 +5,7 @@ import { applyScheme } from '/shared/icons.js';
 import { renderCustomers } from './customers.js';
 import { renderBranding } from './branding.js';
 import { renderAccessPolicy } from './access-policy.js';
+import { renderComputeCatalog } from './compute-catalog.js';
 
 // Administration area: assign servers, manage customers, read the activity log.
 // Receives the shared helpers from app.js so it behaves like the rest of the panel.
@@ -72,6 +73,8 @@ const ACTION_LABELS = {
   admin_setup_check_settings: 'Changed setup check alerts',
   admin_appearance: 'Changed the color scheme',
   admin_branding: 'Changed branding',
+  admin_compute_catalog: 'Changed compute catalog',
+  admin_customer_compute_profile: 'Changed customer offerings',
   admin_winupdates: 'Changed Windows update setting',
   winupdate_started: 'Started Windows updates',
   winupdate_finished: 'Windows updates finished',
@@ -148,6 +151,10 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
         }
       } else if (st.tab === 'permissions') {
         st.accessPolicy = await api('/api/admin/access-policy');
+      } else if (st.tab === 'compute') {
+        [st.computeCatalog, st.customerData] = await Promise.all([
+          api('/api/admin/compute-catalog'), api('/api/admin/customers'),
+        ]);
       } else if (st.tab === 'about') {
         st.about = await api(`/api/admin/about${st.refreshAbout ? '?refresh=1' : ''}`);
         st.refreshAbout = false;
@@ -172,7 +179,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
 
   // ---- shell ------------------------------------------------------------
   function render() {
-    const tabs = [['servers', 'Servers', 'server'], ['customers','Customers','users'], ['users', 'Users', 'user'], ['permissions', 'Permissions', 'shield'], ['templates', 'Templates', 'layers'], ['vpn', 'VPN', 'shield'],
+    const tabs = [['servers', 'Servers', 'server'], ['customers','Customers','users'], ['users', 'Users', 'user'], ['permissions', 'Permissions', 'shield'], ['compute', 'Compute', 'layers'], ['templates', 'Templates', 'layers'], ['vpn', 'VPN', 'shield'],
       ['activity', 'Activity', 'pulse'], ['account', 'Your account', 'user'], ['settings', 'Settings', 'gear'], ['setup', 'Setup check', 'check'], ['about', 'About', 'info']];
     const count = (id) => (id === 'setup' && st.setupProblems ? ` <span class="tab-count" title="Problems found">${st.setupProblems}</span>` : '');
     root.innerHTML = `
@@ -193,6 +200,10 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
     if (st.tab === 'users') renderUsers();
     if (st.tab === 'customers') disposeAccessPolicy=renderCustomers(root.querySelector('#admin-body'),{data:st.customerData,users:st.users,api,esc,toast,fail,confirmAction,onSave:saved=>{st.customerData=saved;}});
     if (st.tab === 'templates') renderTemplates();
+    if (st.tab === 'compute') disposeAccessPolicy = renderComputeCatalog(root.querySelector('#admin-body'), {
+      data: st.computeCatalog, customers: st.customerData.customers, api, esc, toast, fail,
+      onSave: (saved) => { st.computeCatalog = saved; },
+    });
     if (st.tab === 'vpn') renderVpn();
     if (st.tab === 'activity') renderActivity();
     if (st.tab === 'account') {
