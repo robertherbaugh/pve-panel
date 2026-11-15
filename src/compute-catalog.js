@@ -1,5 +1,4 @@
-// Provider catalog only. Provisioning does not consume these settings until the
-// placement/lifecycle integration is delivered. No Proxmox writes occur here.
+// Provider catalog and per-customer opt-in. Saving settings never mutates Proxmox.
 import { db } from './db.js';
 import { customerById } from './tenancy.js';
 
@@ -62,7 +61,7 @@ export function computeCatalog() {
   return {
     ...value, revision: row.revision, updatedAt: row.created_at,
     classes: value.classes.map((c) => ({ ...STORAGE_CLASSES.find((s) => s.id === c.id), ...c })),
-    backupClassId: 'basic', billingMode: 'reservation', rollout: 'preview',
+    backupClassId: 'basic', billingMode: 'reservation', rollout: 'customer-opt-in',
   };
 }
 
@@ -124,13 +123,14 @@ export function saveComputeCatalog(input) {
 }
 
 const profileDefaults = () => ({
+  catalogEnabled: false, network: { bridge: 'vmbr0', vlan: null, verified: false },
   tier: 'basecamp', sizeIds: null, storageClassIds: [...CLASS_IDS], haAllowed: true,
   backupServiceEnabled: false, storageLimitsGb: { basic: 0, standard: 0, fast: 0 }, backupLimitGb: 0,
 });
 export function computeProfile(customerId) {
   if (!customerById(customerId)) fail('Customer not found', 404);
   const row = db.prepare('SELECT * FROM customer_compute_profiles WHERE customer_id=?').get(customerId);
-  const value = row ? JSON.parse(row.value) : profileDefaults();
+  const value = { ...profileDefaults(), ...(row ? JSON.parse(row.value) : {}) };
   return {
     ...value, customerId, revision: row?.revision ?? 0,
     backupServiceIncluded: ['ridge', 'summit'].includes(value.tier),
@@ -138,11 +138,15 @@ export function computeProfile(customerId) {
   };
 }
 export function saveComputeProfile(customerId, input) {
-  object(input, ['revision', 'catalogRevision', 'tier', 'sizeIds', 'storageClassIds', 'haAllowed', 'backupServiceEnabled', 'storageLimitsGb', 'backupLimitGb'], 'customer offerings');
+  object(input, ['catalogEnabled', 'network', 'revision', 'catalogRevision', 'tier', 'sizeIds', 'storageClassIds', 'haAllowed', 'backupServiceEnabled', 'storageLimitsGb', 'backupLimitGb'], 'customer offerings');
   integer(input.revision, 0, Number.MAX_SAFE_INTEGER, 'profile revision');
   integer(input.catalogRevision, 1, Number.MAX_SAFE_INTEGER, 'catalog revision');
   if (!SERVICE_TIERS.includes(input.tier)) fail('Unknown service tier');
+  const network = input.network ?? { bridge: 'vmbr0', vlan: null, verified: false };
+  object(network, ['bridge', 'vlan', 'verified'], 'guest network');
   const value = {
+    catalogEnabled: bool(input.catalogEnabled ?? false, 'catalog enabled'),
+    network: { bridge: pveId(network.bridge, 'guest bridge'), vlan: network.vlan === null ? null : integer(network.vlan, 1, 4094, 'guest VLAN'), verified: bool(network.verified, 'network verified') },
     tier: input.tier,
     sizeIds: input.sizeIds === null ? null : unique(array(input.sizeIds, 100, 'size IDs').map((s) => identifier(s, 'size ID')), 'size ID'),
     storageClassIds: unique(array(input.storageClassIds, 3, 'class IDs'), 'class ID'),

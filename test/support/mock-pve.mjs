@@ -207,6 +207,8 @@ export async function startMockPve({ port = 0 } = {}) {
     if (p === '/__vms') return send(res, [...vms.keys()]);
     if (p.startsWith('/__clearfw/')) { const v = vms.get(Number(p.split('/')[2])); v.fwRules = (v.fwRules ?? []).filter(r => r.type !== 'out'); return send(res, 'cleared'); }
     if (p === '/cluster/nextid') { const want = u.searchParams.get('vmid'); if (want) return vms.has(Number(want)) ? send(res,null,400,`VM ${want} already exists`) : send(res, want); let id=100; while (vms.has(id)) id++; return send(res, String(id)); }
+    if (p === '/cluster/ha/status/current') return send(res, cluster.haStatus ?? []);
+    if (/^\/nodes\/[^/]+\/network$/.test(p)) return send(res, cluster.networks ?? [{ iface: 'vmbr0', active: 1 }]);
     if (p === '/nodes') return cluster.inventoryDenied ? send(res, null, 403, 'Permission denied') : send(res, cluster.nodes ?? [{ node: 'pve1', status: 'online' }]);
     if (/^\/nodes\/[^/]+\/storage$/.test(p)) {
       const node = decodeURIComponent(p.split('/')[2]);
@@ -343,10 +345,12 @@ export async function startMockPve({ port = 0 } = {}) {
       if (vm.status !== 'stopped') return send(res, null, 500, 'VM is running'); return send(res, task('qmdestroy', vmid, 1000, () => vms.delete(vmid))); }
     if (rest === '/clone' && req.method === 'POST') { const b = await body(req); log('CLONE', vmid, JSON.stringify(b));
       const id = Number(b.newid); if (vms.has(id)) return send(res,null,500,`VM ${id} already exists`);
-      vms.set(id, { origin: vmid, vmid:id, node:'pve1', type:'qemu', name:b.name, pool:b.pool, status:'stopped', lock:'clone', maxcpu:vm.maxcpu, maxmem:vm.maxmem, maxdisk:vm.maxdisk, cfg:{...vm.cfg, scsi0: vm.cfg.scsi0.replace(`base-${vmid}`, `vm-${id}`), net0: vm.cfg.net0 ? vm.cfg.net0.replace(/=[0-9A-Fa-f:]{17}/, '').replace(/^(\w+)/, `$1=${newMac()}`) : `virtio=${newMac()},bridge=vmbr0`} });
+      vms.set(id, { origin: vmid, vmid:id, node:b.target || vm.node, type:'qemu', name:b.name, pool:b.pool, status:'stopped', lock:'clone', maxcpu:vm.maxcpu, maxmem:vm.maxmem, maxdisk:vm.maxdisk, cfg:{...vm.cfg, ...(b.description ? {description:b.description} : {}), scsi0: vm.cfg.scsi0.replace(`base-${vmid}`, `vm-${id}`).replace(/^[^:]+:/, `${b.storage || vm.cfg.scsi0.split(':')[0]}:`), net0: vm.cfg.net0 ? vm.cfg.net0.replace(/=[0-9A-Fa-f:]{17}/, '').replace(/^(\w+)/, `$1=${newMac()}`) : `virtio=${newMac()},bridge=vmbr0`} });
       if (vms.get(id).cfg.net0 && !/=/.test(vms.get(id).cfg.net0.split(',')[0])) vms.get(id).cfg.net0 = withMac(vms.get(id).cfg.net0);
-      return send(res, task('qmclone', vmid, 2500, () => { delete vms.get(id).lock; })); }
-    if (rest === '/config' && req.method === 'GET') return send(res, vm.cfg);
+      const upid = task('qmclone', vmid, cluster.cloneDelay ?? 2500, () => { if (vms.has(id)) delete vms.get(id).lock; });
+      if (cluster.loseCloneResponse) { cluster.loseCloneResponse = false; return res.destroy(); }
+      return send(res, upid); }
+    if (rest === '/config' && req.method === 'GET') return send(res, {...vm.cfg, ...(vm.lock ? {lock:vm.lock} : {})});
     if (rest === '/config' && req.method === 'PUT') { const b = await body(req); if (b.net0) b.net0 = withMac(b.net0); log('CONFIG', vmid, JSON.stringify(b));
       const hot = vm.status === 'running';
       for (const k of ['cores', 'memory', 'sockets']) if (b[k] !== undefined && hot && String(vm.cfg[k] ?? '') !== String(b[k])) (vm.pending ??= {})[k] = b[k];

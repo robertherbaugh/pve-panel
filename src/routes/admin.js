@@ -1,3 +1,4 @@
+import { computeManaged } from '../compute-state.js';
 import bcrypt from 'bcryptjs';
 import { createHash } from 'node:crypto';
 import { db, audit } from '../db.js';
@@ -34,6 +35,7 @@ const policyResponse = (policy) => ({ policy, actions: ACTIONS, revision: policy
 
 
 function transferError(vmid, row) {
+  if (computeManaged(vmid)) return 'Catalog allocations must be deleted or explicitly transferred with their reservation history';
   if (['creating','deleting'].includes(row?.state) || activeRun(vmid) || db.prepare("SELECT 1 FROM backup_jobs WHERE vmid=? AND state IN ('queued','running')").get(vmid)) return 'Wait until the server’s current operation finishes before changing its customer';
   if (db.prepare('SELECT 1 FROM tailscale WHERE vmid=?').get(vmid)) return 'Disconnect Tailscale before changing this server’s customer';
   return null;

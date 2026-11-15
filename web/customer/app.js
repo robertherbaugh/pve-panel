@@ -822,14 +822,17 @@ async function openCreate() {
 
 function renderCreate() {
   const destinations = state.account.cloneDestinations ?? [];
+  const catalog = state.account.offerings?.enabled ? state.account.offerings : null;
   const destination = destinations.find((d) => d.id === state.createDestination);
-  state.templates = (state.allTemplates ?? state.templates).filter((t) => !destination || destination.templates.includes(t.id));
+  state.templates = (state.allTemplates ?? state.templates).filter((t) => (!destination || destination.templates.includes(t.id)) && (!catalog || typeof t.id === 'number'));
   const left = remaining();
   const limits = creationLimits();
   const gb = (mb) => `${+(mb / 1024).toFixed(1)} GB`;
   const minDisk = Math.min(...state.templates.map((t) => t.minDiskGb));
 
+  const sizes = catalog?.sizes.filter(s => s.cores <= left.cores && s.memoryMb <= left.memoryMb && s.minDiskGb <= left.diskGb) ?? [];
   const blockers = [];
+  if (catalog && (!sizes.length || !catalog.classes.length)) blockers.push('no catalog offerings fit your remaining quota');
   if (left.servers < 1) blockers.push(`you already have ${limits.servers} of ${limits.servers} servers`);
   if (left.cores < 1) blockers.push('all CPU cores in your plan are in use');
   if (left.memoryMb < 512) blockers.push('less than 0.5 GB memory is left in your plan');
@@ -889,7 +892,7 @@ function renderCreate() {
         <fieldset>
           <legend>Size</legend>
           <div class="grid-3">
-            <label>CPU cores
+            ${catalog ? `<label>VM size<select name="sizeId">${sizes.map(s => `<option value="${esc(s.id)}">${esc(s.name)} · ${s.cores} vCPU · ${gb(s.memoryMb)}</option>`).join('')}</select></label><label>Storage class<select name="storageClassId">${catalog.classes.map(c => `<option value="${c.id}" ${c.id === 'standard' ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>` : `            <label>CPU cores
               <input name="cores" type="number" min="1" max="${left.cores}" value="${Math.min(2, left.cores)}" required>
             </label>
             <label>Memory
@@ -897,6 +900,7 @@ function renderCreate() {
                 ${memOptions.map((m) => `<option value="${m}" ${m === defaultMem ? 'selected' : ''}>${gb(m)}</option>`).join('')}
               </select>
             </label>
+`}
             <label>Disk (GB)
               <input name="diskGb" type="number" min="${first.minDiskGb}" max="${left.diskGb}"
                      value="${Math.min(Math.max(first.minDiskGb, 20), left.diskGb)}" required>
@@ -942,7 +946,18 @@ function renderCreate() {
         </div>
       </form>
     </div>`;
-  applyTemplateMode($('#create-form'), first);
+  const createForm = $('#create-form');
+  applyTemplateMode(createForm, first);
+  if (catalog) {
+    const applySize = () => {
+      const size = sizes.find(s => s.id === createForm.sizeId.value);
+      const image = findTemplate(createForm.templateId.value);
+      createForm.diskGb.min = Math.max(size.minDiskGb, image.minDiskGb);
+      if (Number(createForm.diskGb.value) < Number(createForm.diskGb.min)) createForm.diskGb.value = createForm.diskGb.min;
+    };
+    createForm.addEventListener('change', applySize); applySize();
+    createForm.querySelector('#create-error').insertAdjacentHTML('beforebegin', '<p class="hint">Placement is automatic. Your allocated VM and storage remain billable while the VM is stopped.</p>');
+  }
 }
 
 const findTemplate = (value) => state.templates.find((t) => String(t.id) === String(value));
@@ -1633,8 +1648,7 @@ async function submitCreate(form) {
     ...(state.createDestination ? { accessRuleId: state.createDestination } : {}),
     hostname: form.hostname.value.trim(),
     ...(tpl.setup === 'cloudinit' ? { username: form.username.value.trim() } : {}),
-    cores: Number(form.cores.value),
-    memoryMb: Number(form.memoryMb.value),
+    ...(form.sizeId ? { sizeId: form.sizeId.value, storageClassId: form.storageClassId.value } : { cores: Number(form.cores.value), memoryMb: Number(form.memoryMb.value) }),
     diskGb: Number(form.diskGb.value),
     ...(password ? { password } : {}),
     ...(sshKeys ? { sshKeys } : {}),
@@ -1642,7 +1656,9 @@ async function submitCreate(form) {
   const button = $('#create-submit');
   button.disabled = true;
   try {
-    const { vmid } = await api('/api/vms', { method: 'POST', body });
+    const fingerprint = JSON.stringify(body);
+    if (form.requestFingerprint !== fingerprint) { form.requestFingerprint = fingerprint; form.requestKey = crypto.randomUUID(); }
+    const { vmid } = await api('/api/vms', { method: 'POST', body, headers: form.sizeId ? { 'Idempotency-Key': form.requestKey } : {} });
     toast(`Setting up ${body.hostname}`);
     state.account = await api('/api/account');
     await loadList();

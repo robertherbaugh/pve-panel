@@ -1,3 +1,4 @@
+import { computeManaged } from './compute-state.js';
 // Backups for customers, stored on a Proxmox Backup Server (or any backup
 // storage) through the Proxmox VE API — the panel never talks to PBS directly
 // and never holds PBS credentials.
@@ -238,6 +239,7 @@ function parseConfig(text) {
 }
 
 export async function startRestore(req,row,guest,options) {
+  if (computeManaged(row.vmid)) throw new BackupError(409, 'Catalog restore is not available yet. This protects the VM’s reserved size and storage class.');
   if(capacityBusy(row.customer_id)) throw new BackupError(409,'Another operation is changing this customer’s resource usage');
   const key=`customer:${row.customer_id}`; capacityLocks.add(key);
   try { return await prepareRestore(req,row,guest,options); } finally { capacityLocks.delete(key); }

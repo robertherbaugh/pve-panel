@@ -22,12 +22,12 @@ before(async () => {
 });
 after(async () => { sql?.close(); await stack?.stop(); fs.rmSync(dir, { recursive: true, force: true }); });
 
-test('catalog starts in preview with fixed storage classes, disabled examples and reservation billing', async () => {
+test('catalog starts with opt-in disabled and fixed storage classes, disabled examples and reservation billing', async () => {
   const c = await state();
   assert.deepEqual(c.classes.map(({ id, media }) => ({ id, media })), [
     { id: 'basic', media: 'HDD' }, { id: 'standard', media: 'Enterprise SSD' }, { id: 'fast', media: 'NVMe' },
   ]);
-  assert.equal(c.backupClassId, 'basic'); assert.equal(c.billingMode, 'reservation'); assert.equal(c.rollout, 'preview');
+  assert.equal(c.backupClassId, 'basic'); assert.equal(c.billingMode, 'reservation'); assert.equal(c.rollout, 'customer-opt-in');
   assert.ok(c.sizes.every((s) => !s.enabled)); assert.ok(c.classes.every((s) => !s.enabled && !s.bindings.length));
   assert.equal(c.revision, 1);
   assert.match((await admin.get('/api/admin/compute-catalog')).headers.get('cache-control'), /no-store/);

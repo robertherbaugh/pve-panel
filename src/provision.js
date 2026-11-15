@@ -1,5 +1,7 @@
 import { db, audit } from './db.js';
 import { config } from './config.js';
+import { resolveOffering, selectPlacement, checkOfferingRevision, verifyComputeDeleted } from './compute-placement.js';
+import { beginOperation, priorRequest, requestHash, updateOperation, completeOperation, operationById, operationCredentials, pendingOperations, releaseCompute, assertComputeIdle, computeManaged } from './compute-state.js';
 import { capacityLocks,capacityBusy } from './capacity.js';
 import { customerById, requireCustomer } from './tenancy.js';
 import {
@@ -173,6 +175,12 @@ export async function createServer(req, spec) {
   }
   const account = grant ? withLimits(req.account, grant) : req.account;
   if (!account.can_create) throw new ProvisionError(403, 'Creating servers is not enabled for your account');
+  const offering = resolveOffering(customer.id, spec);
+  if (!offering && (!Number.isInteger(spec.cores) || !Number.isInteger(spec.memoryMb))) throw new ProvisionError(400, 'CPU and memory are required');
+  const key = req.headers?.['idempotency-key'];
+  const hash = offering ? requestHash(spec) : null;
+  const previous = offering ? priorRequest(customer.id, account.id, key, hash) : null;
+  if (previous) return previous.vmid;
   if (capacityBusy(customer.id)) {
     throw new ProvisionError(409, 'Another server is being created. Wait until it has finished.');
   }
@@ -192,7 +200,7 @@ export async function createServer(req, spec) {
       const storages = isContainer ? [ctRow.storage] : tplRow.storage ? [tplRow.storage]
         : Object.entries(source).filter(([key, value]) => /^(?:(?:ide|sata|scsi|virtio)\d+|efidisk0|tpmstate0)$/.test(key) && !String(value).startsWith('none'))
           .map(([, value]) => String(value).split(':')[0]);
-      if (!storages.length || storages.some((storage) => !grant.clone.storages.includes(storage))) throw new ProvisionError(403, 'The image storage is not allowed at this destination');
+      if (!offering && (!storages.length || storages.some((storage) => !grant.clone.storages.includes(storage)))) throw new ProvisionError(403, 'The image storage is not allowed at this destination');
       destinationPool = grant.clone.pool;
       spec.accessTags = grant.tags.join(';');
       spec.accessRuleId = grant.id;
@@ -225,7 +233,19 @@ export async function createServer(req, spec) {
     const net = config.network.enabled ? await ensureNetwork(account.id,customer.id) : null;
 
     // Reserve ID + start clone, serialised against other creations
-    const { vmid, upid } = await serial(async () => {
+    const insertVM = (id, operationId = null) => {
+      db.prepare(`INSERT INTO vms(vmid,user_id,type,state,created_by_customer,spec,progress,expires_at,expiry_set_at,access_managed,customer_id)
+        VALUES(?,?,?,'creating',1,?,?,?,?,?,?)`).run(id, account.id, isContainer ? 'lxc' : 'qemu', JSON.stringify({
+          cores: spec.cores, memoryMb: spec.memoryMb, diskGb: spec.diskGb, template: spec.templateId, hostname: spec.hostname,
+          ...(offering ? { offering, operationId } : {}), ...(grant ? { accessRuleId: grant.id, pool: destinationPool } : {}),
+        }), 'Copying the image', expiryForNewServer(account.id,new Date(),customer.id), new Date().toISOString(), grant ? 1 : 0, customer.id);
+    };
+    const { vmid, upid, operationId = null, targetNode = tpl?.node, taskNode = tpl?.node } = await serial(async () => {
+      const sourceConfig = offering ? await pve.get(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/config`) : null;
+      if (offering && Object.entries(sourceConfig).filter(([k, v]) => /^(scsi|sata|virtio|ide)\d+$/.test(k) && !/media=cdrom|cloudinit/.test(String(v)) && !String(v).startsWith('none')).length !== 1) throw new ProvisionError(400, 'Catalog images must have one data disk');
+      if (offering && Object.keys(sourceConfig).some(k => /^net[1-9][0-9]*$/.test(k))) throw new ProvisionError(400, 'Catalog images must have one guest network interface');
+      if (offering && customer.pools.length && !customer.pools.includes(destinationPool)) throw new ProvisionError(403, 'The destination pool is outside this customer');
+      const placement = offering ? await selectPlacement({ offering, template: tpl, sourceConfig, pool: destinationPool, grant }) : null;
       // Proxmox's next free ID, skipping IDs the panel still has records for
       // (e.g. a VM that was deleted directly in Proxmox but is still assigned here).
       const known = db.prepare('SELECT 1 FROM vms WHERE vmid = ?');
@@ -248,6 +268,25 @@ export async function createServer(req, spec) {
         const current = cloneRule(req, grant.id);
         if (JSON.stringify(current) !== JSON.stringify(grant)) throw new ProvisionError(409, 'The cloning policy changed. Please try again.');
       }
+      if (offering) {
+        checkOfferingRevision(customer.id, offering);
+        const { password, username, sshKeys, ...safeSpec } = spec;
+        const op = beginOperation({ customerId: customer.id, userId: account.id, vmid: id, key, hash,
+          plan: { ...placement, spec: safeSpec, template: tplRow }, credentials: { password, username, sshKeys }, onReserve: opId => insertVM(id, opId) });
+        updateOperation(op.id, 'submitting');
+        try {
+          const task = await pve.post(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/clone`, {
+            newid: id, name: spec.hostname, full: 1, storage: placement.storage, pool: destinationPool,
+            target: placement.node === tpl.node ? undefined : placement.node, description: `pve-panel-operation:${op.id}`,
+          });
+          updateOperation(op.id, 'cloning', { upid: task, taskNode: tpl.node });
+          return { vmid: id, upid: task, operationId: op.id, targetNode: placement.node, taskNode: tpl.node };
+        } catch (err) {
+          updateOperation(op.id, 'review', { error: 'The clone outcome needs reconciliation.' });
+          db.prepare("UPDATE vms SET state='failed',error='The clone outcome needs provider reconciliation',progress=NULL WHERE vmid=?").run(id);
+          throw err;
+        }
+      }
       const task = isContainer
         ? await pve.post(`/nodes/${encodeURIComponent(ctRow.node)}/lxc`, containerParams({ vmid: id, row: ctRow, spec, net, pool: destinationPool }))
         : await pve.post(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/clone`, {
@@ -261,21 +300,14 @@ export async function createServer(req, spec) {
     });
 
     const templateRef = isContainer ? spec.templateId : tpl.vmid;
-    db.prepare(`
-      INSERT INTO vms (vmid, user_id, type, label, state, created_by_customer, spec, progress, expires_at, expiry_set_at, access_managed, customer_id)
-      VALUES (?, ?, ?, NULL, 'creating', 1, ?, ?, ?, ?, ?, ?)
-    `).run(vmid, account.id, isContainer ? 'lxc' : 'qemu', JSON.stringify({
-      cores: spec.cores, memoryMb: spec.memoryMb, diskGb: spec.diskGb, template: templateRef,
-      hostname: spec.hostname,
-      ...(grant ? { accessRuleId: grant.id, pool: destinationPool } : {}),
-    }), isContainer ? 'Creating the container' : 'Copying the image', expiryForNewServer(account.id,new Date(),customer.id), new Date().toISOString(), grant ? 1 : 0,customer.id);
+    if (!offering) insertVM(vmid);
     audit(req, vmid, 'server_create_started', { template: templateRef, hostname: spec.hostname, ...(grant ? { accessRuleId: grant.id, pool: destinationPool } : {}) });
 
     background = true;
     const actor = { account: { id: account.id }, customerId:customer.id, ip: req.ip };
     (isContainer
       ? finishContainer(actor, ctRow.node, vmid, upid, net)
-      : finishCreate(actor, tpl.node, vmid, upid, spec, tplRow, net))
+      : finishCreate(actor, targetNode, vmid, upid, spec, tplRow, net, { operationId, taskNode }))
       .finally(() => creatingFor.delete(capacityKey));
 
     return vmid;
@@ -287,17 +319,24 @@ export async function createServer(req, spec) {
 const setProgress = db.prepare('UPDATE vms SET progress = ? WHERE vmid = ?');
 
 async function finishCreate(actor, node, vmid, cloneUpid, spec, tplRow, net, {
-  mac = null, done = 'server_created', failed = 'server_create_failed',
+  mac = null, done = 'server_created', failed = 'server_create_failed', operationId = null, taskNode = node,
 } = {}) {
   const path = `/nodes/${encodeURIComponent(node)}/qemu/${vmid}`;
   const progress = (text) => setProgress.run(text, vmid);
   const windows = spec.setup === 'windows';
   try {
-    await waitTask(node, cloneUpid);
+    await waitTask(taskNode, cloneUpid);
+    if (operationId) updateOperation(operationId, 'configuring');
 
     progress('Configuring');
     const cfg = await pve.get(`${path}/config`);
     const params = { cores: spec.cores, sockets: 1, memory: spec.memoryMb };
+    if (operationId) {
+      const plan = operationById(operationId).plan;
+      if (!String(cfg.description ?? '').includes(`pve-panel-operation:${operationId}`)) throw new Error('VM identity does not match its provisioning operation');
+      const network = plan.offering.network;
+      params.net0 = `${String(cfg.net0 ?? nicModel(cfg.net0)).split(',')[0]},bridge=${network.bridge}${network.vlan ? `,tag=${network.vlan}` : ''},firewall=1`;
+    }
     if (net) {
       // Customer's VNet, firewall on for isolation. A kept MAC (reinstall) gets
       // the same DHCP address again; otherwise Proxmox assigns a new one.
@@ -324,7 +363,7 @@ async function finishCreate(actor, node, vmid, cloneUpid, spec, tplRow, net, {
     }
 
     progress('Starting');
-    await waitTask(node, await pve.post(`${path}/status/start`));
+    if (!operationId || (await pve.get(`${path}/status/current`)).status !== 'running') await waitTask(node, await pve.post(`${path}/status/start`));
 
     if (windows) {
       await setupWindows({
@@ -337,11 +376,13 @@ async function finishCreate(actor, node, vmid, cloneUpid, spec, tplRow, net, {
       });
     }
 
-    db.prepare("UPDATE vms SET state = 'ready', error = NULL, progress = NULL WHERE vmid = ?").run(vmid);
+    const ready = () => db.prepare("UPDATE vms SET state = 'ready', error = NULL, progress = NULL WHERE vmid = ?").run(vmid);
+    if (operationId) completeOperation(operationId, ready); else ready();
     audit(actor, vmid, done);
   } catch (err) {
+    if (operationId) updateOperation(operationId, 'review', { error: String(err.message).slice(0, 500) });
     db.prepare("UPDATE vms SET state = 'failed', error = ?, progress = NULL WHERE vmid = ?")
-      .run(String(err.message).slice(0, 500), vmid);
+      .run(operationId ? 'Provisioning needs provider reconciliation' : String(err.message).slice(0, 500), vmid);
     audit(actor, vmid, failed, { error: err.message });
   } finally {
     invalidateGuestCache();
@@ -364,7 +405,7 @@ async function finishContainer(actor, node, vmid, createUpid, net, { done = 'ser
     audit(actor, vmid, done);
   } catch (err) {
     db.prepare("UPDATE vms SET state = 'failed', error = ?, progress = NULL WHERE vmid = ?")
-      .run(String(err.message).slice(0, 500), vmid);
+      .run(operationId ? 'Provisioning needs provider reconciliation' : String(err.message).slice(0, 500), vmid);
     audit(actor, vmid, failed, { error: err.message });
   } finally {
     invalidateGuestCache();
@@ -389,6 +430,7 @@ function lifecycleAccount(req,row,customer) {
 }
 
 export async function reinstallServer(req, row, input) {
+  if (computeManaged(row.vmid)) throw new ProvisionError(409, 'Catalog reinstall is not available yet. This protects the VM’s storage and placement.');
   const customer=requireCustomer(req);
   const account=lifecycleAccount(req,row,customer);
   const capacityKey=`customer:${customer.id}`;
@@ -525,6 +567,7 @@ else { 'nothing' }
  * restart by Proxmox (optionally right away); disks only grow.
  */
 export async function resizeServer(req, row, { cores, memoryMb, diskGb, restart = false }) {
+  if (computeManaged(row.vmid)) throw new ProvisionError(409, 'Choose a catalog size when resizing. Catalog resize is not available yet.');
   const customer=requireCustomer(req);
   const account=lifecycleAccount(req,row,customer);
   const capacityKey=`customer:${customer.id}`;
@@ -635,11 +678,14 @@ export async function resizeServer(req, row, { cores, memoryMb, diskGb, restart 
 
 /** Destroys a customer-created server (must be stopped) and removes its record. */
 export async function deleteServer(req, row) {
+  assertComputeIdle(row.vmid);
   const guests = await clusterGuests(true);
   const guest = guests.get(row.vmid);
 
   if (!guest) {
-    // Clone never happened or VM already gone: just drop the record.
+    // Unresolved clones are blocked above. Only verified absence releases an allocation.
+    await verifyComputeDeleted(row.vmid);
+    releaseCompute(row.vmid);
     db.prepare('DELETE FROM vms WHERE vmid = ?').run(row.vmid);
     audit(req, row.vmid, 'server_deleted');
     return { removed: true };
@@ -649,6 +695,7 @@ export async function deleteServer(req, row) {
   }
 
   const path = guestPath(guest); // VM or container
+  if (computeManaged(row.vmid) && (await pve.get(`${path}/config`)).lock) throw new ProvisionError(409, 'Wait until Proxmox unlocks this VM');
   const upid = await pve.del(path, { purge: 1, 'destroy-unreferenced-disks': 1 });
   db.prepare("UPDATE vms SET state = 'deleting' WHERE vmid = ?").run(row.vmid);
   audit(req, row.vmid, 'server_delete_started');
@@ -656,6 +703,8 @@ export async function deleteServer(req, row) {
   const actor = { account: { id: req.account.id }, customerId:row.customer_id, ip: req.ip };
   waitTask(guest.node, upid)
     .then(async () => {
+      await verifyComputeDeleted(row.vmid);
+      releaseCompute(row.vmid);
       db.prepare('DELETE FROM vms WHERE vmid = ?').run(row.vmid);
       audit(actor, row.vmid, 'server_deleted');
       await forgetServerBackups(row.vmid, guest.node);
@@ -667,4 +716,53 @@ export async function deleteServer(req, row) {
     .finally(invalidateGuestCache);
 
   return { removed: false };
+}
+
+// Recovery follows accepted clone tasks. It never resubmits an ambiguous clone.
+export function startComputeRecovery(log) {
+  for (const op of pendingOperations()) {
+    if (op.kind !== 'create') { updateOperation(op.id, 'review', { error: 'Interrupted operation needs reconciliation' }); continue; }
+    if (!op.upid || !op.task_node) {
+      updateOperation(op.id, 'review', { error: 'Interrupted before the task response was recorded. Reconcile before retrying.' });
+      continue;
+    }
+    const row = db.prepare('SELECT * FROM vms WHERE vmid=? AND customer_id=?').get(op.vmid, op.customer_id);
+    if (!row || JSON.parse(row.spec ?? '{}').operationId !== op.id) { updateOperation(op.id, 'review', { error: 'VM ownership needs reconciliation' }); continue; }
+    try {
+      const spec = { ...op.plan.spec, ...operationCredentials(op.id) };
+      db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Resuming provisioning' WHERE vmid=?").run(op.vmid);
+      finishCreate({ account: { id: op.user_id }, customerId: op.customer_id, ip: 'recovery' }, op.plan.node, op.vmid, op.upid, spec, op.plan.template, null, { operationId: op.id, taskNode: op.task_node }).catch(err => log.warn(err.message));
+    } catch { updateOperation(op.id, 'review', { error: 'Provisioning credentials could not be recovered' }); }
+  }
+}
+
+// Resume only an existing, identifiable VM. Never retry a clone POST.
+export async function reconcileComputeOperation(req, id, action) {
+  const op = operationById(id);
+  if (!op || op.state !== 'review' || op.kind !== 'create') throw new ProvisionError(409, 'This operation is not awaiting create reconciliation');
+  const row = db.prepare('SELECT * FROM vms WHERE vmid=? AND customer_id=?').get(op.vmid, op.customer_id);
+  if (!row || JSON.parse(row.spec ?? '{}').operationId !== id) throw new ProvisionError(409, 'VM ownership needs manual reconciliation');
+  if (op.upid && op.task_node) {
+    const status = await pve.get(`/nodes/${encodeURIComponent(op.task_node)}/tasks/${encodeURIComponent(op.upid)}/status`);
+    if (status.status !== 'stopped') throw new ProvisionError(409, 'The Proxmox task is still running');
+    if (action === 'resume' && status.exitstatus !== 'OK') throw new ProvisionError(409, 'The Proxmox task failed. Inspect the VM before continuing.');
+  }
+  const guest = (await clusterGuests(true)).get(op.vmid);
+  if (action === 'release') {
+    if (!op.upid || !op.task_node || guest) throw new ProvisionError(409, 'Release requires a recorded terminal task and verified VM absence. Unknown submissions retain their reservation.');
+    await verifyComputeDeleted(op.vmid);
+    releaseCompute(op.vmid);
+    db.prepare('DELETE FROM vms WHERE vmid=?').run(op.vmid);
+  } else {
+    if (!guest || guest.template || guest.node !== op.plan.node) throw new ProvisionError(409, 'The expected VM is not present on its reserved node');
+    const cfg = await pve.get(`${guestPath(guest)}/config`);
+    if (guest.lock || cfg.lock || !String(cfg.description ?? '').includes(`pve-panel-operation:${id}`) || !(await pve.get(`/pools/${encodeURIComponent(op.plan.pool)}`)).members?.some(m => Number(m.vmid) === op.vmid && m.type === 'qemu')) throw new ProvisionError(409, 'VM identity, pool or lock state needs manual reconciliation');
+    const spec = { ...op.plan.spec, ...operationCredentials(id) };
+    if (operationById(id).state !== 'review') throw new ProvisionError(409, 'This operation already resumed');
+    updateOperation(id, 'configuring');
+    db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Resuming provisioning' WHERE vmid=?").run(op.vmid);
+    finishCreate({ account: { id: op.user_id }, customerId: op.customer_id, ip: req.ip }, op.plan.node, op.vmid, null, spec, op.plan.template, null, { operationId: id });
+  }
+  audit({ account: req.account, customerId: op.customer_id, ip: req.ip }, op.vmid, 'admin_compute_reconcile', { id, action });
+  return { accepted: true };
 }

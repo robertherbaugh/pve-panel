@@ -5,8 +5,11 @@ Administrators configure it under **Compute** in the administration portal.
 
 ## Current implementation
 
-This release provides configuration and a read-only capacity preview.
-It does not change VM creation, backup jobs, networking, billing or HA configuration.
+This release provides the catalog, capacity preview and optional catalog provisioning for new VMs.
+Each customer starts with catalog provisioning disabled.
+Enable it after you map storage and check the customer's existing guest network.
+The customer selects an available size, storage class and disk capacity.
+The server derives CPU and memory from the selected size.
 All example sizes and storage classes start disabled.
 Catalog changes retain their previous revisions.
 
@@ -22,6 +25,32 @@ Missing inventory produces an exclusion reason rather than an eligible destinati
 A passing preview does not reserve resources or establish that a VM can run there.
 Template compatibility, guest networks, CPU compatibility, maintenance state, permissions and concurrent reservations need additional checks before provisioning.
 HA also needs a separate infrastructure assessment.
+
+### Provisioning and recovery
+
+Placement excludes offline and maintenance nodes, unreadable allocations, insufficient reserved capacity and unavailable customer bridges.
+Both running and stopped guests count toward CPU and memory admission.
+The initial policy allows one allocated vCPU per logical CPU.
+Pending operations reserve capacity before the clone request.
+Full cluster VM audit access is required to count other guests.
+Clone, pool configuration and datastore allocation rights are also required.
+
+Direct cross-node clones require shared template volumes accessible from the destination.
+The panel waits for the task on its source node and configures the VM on its destination node.
+Catalog images currently support QEMU VMs with one data disk and at most one network interface.
+The checked existing bridge and VLAN replace the image's guest network.
+The panel does not enable or change Proxmox SDN.
+
+A restart follows accepted clone tasks without submitting another clone.
+Unknown outcomes retain their reservations and require provider reconciliation under **Compute operations**.
+Resume checks the VM marker, destination, pool and lock state.
+Release requires a recorded terminal task and checked VM absence.
+Unknown submissions cannot be released automatically.
+
+Unresolved operations block customer mutations and provider reassignment.
+Catalog resize, reinstall and full restore remain blocked until their integration preserves the offering.
+Existing creation and lifecycle operations continue for customers without catalog opt-in.
+Do not enable catalog provisioning broadly before the pilot passes on the target infrastructure.
 
 ## Product decisions
 
@@ -65,7 +94,8 @@ Customer profiles can restrict sizes, classes and HA availability.
 A null size list permits all enabled sizes, including future sizes. An empty list permits none.
 Profiles also define class-specific disk limits and a separate backup storage limit.
 A zero limit adds no cap beyond the existing aggregate customer quota.
-This release records these settings for the provisioning integration. It does not enforce them in existing operations.
+Catalog creation enforces size restrictions, storage classes, class limits and existing aggregate quotas.
+Backup entitlement enforcement and HA activation need separate integration.
 
 HA activation changes capacity requirements and service commitments.
 Record the applicable SLA and MSA acceptance before activating HA for a customer VM.
@@ -90,16 +120,18 @@ Record disk allocation by storage class and keep it billable while retained.
 Keep backup service fees separate from Basic backup storage usage.
 Define a backup storage measure before pricing compressed or deduplicated PBS data.
 
-Catalog revisions preserve offering definitions. They are not VM allocation records or billing meters.
-The provisioning integration must record allocation changes for create, resize, storage changes, add-ons, adoption and deletion.
+Catalog revisions preserve offering definitions.
+Catalog creation records durable operations, encrypted temporary credentials, capacity reservations and allocation events.
+Deletion closes the allocation after the panel checks VM absence.
+Resize, storage changes, add-ons and adoption need additional allocation events.
 Migration must not create a second charge for the same allocation.
 Do not activate invoicing until allocation reconciliation and pricing rules are complete.
 
 ## Delivery sequence
 
-1. Deliver the catalog, customer profiles and read-only capacity preview in this release.
+1. Configure the catalog, customer profiles and capacity reserves.
 2. Check datastore media, node permissions, template disks, network isolation and connectivity in the target cluster.
-3. Add persistent operations and capacity reservations before routing creation through the catalog.
+3. Enable catalog provisioning for selected customers after the infrastructure checks pass.
 4. Add placement across eligible nodes, with template replication or clone-and-migrate when direct clone targeting cannot work.
 5. Make resize, reinstall, restore and deletion preserve the offering and allocation history.
 6. Integrate native Proxmox HA after storage, networking, spare capacity and service acceptance pass their checks.
@@ -120,7 +152,11 @@ Customers select offerings. Administrators maintain the infrastructure that can 
 | GET | `/api/admin/customers/:id/compute-profile` | Read a customer's offerings. |
 | PUT | `/api/admin/customers/:id/compute-profile` | Save offerings with current profile and catalog revisions. |
 
-The customer portal exposes none of these routes.
-No endpoint in this feature writes to Proxmox.
-The server fixes `backupClassId` to `basic`, `billingMode` to `reservation` and `rollout` to `preview`.
+| GET | `/api/admin/compute-operations` | Review recent operations and provider diagnostics. |
+| POST | `/api/admin/compute-operations/:id/reconcile` | Resume an identified VM or release a checked failed reservation. |
+
+The customer portal exposes none of these administration routes.
+Customers read eligible offerings at `/api/compute-offerings` and allocation events at `/api/compute-allocations`.
+Catalog creates use `/api/vms` with an `Idempotency-Key` header.
+The server fixes `backupClassId` to `basic`, `billingMode` to `reservation` and catalog `rollout` to `customer-opt-in`.
 Clients cannot change these fields.

@@ -1,3 +1,4 @@
+import { computeManaged, assertComputeIdle } from '../compute-state.js';
 import { Readable } from 'node:stream';
 import { db, audit } from '../db.js';
 import { config } from '../config.js';
@@ -8,6 +9,8 @@ import {
 import {
   limitsOf, usageOf, offeredTemplates, createServer, deleteServer, reinstallServer, resizeServer,
 } from '../provision.js';
+import { customerOfferings } from '../compute-placement.js';
+import { allocationHistory } from '../compute-state.js';
 import { requireCustomer, customerContext } from '../tenancy.js';
 import { customerUsage } from '../provision.js';
 import { networkOf } from '../network.js';
@@ -106,7 +109,8 @@ function summarize(row, guest) {
     error: row.state === 'failed' ? row.error : null,
     progress: row.state === 'creating' ? row.progress : null,
     deletable: !!row.created_by_customer,
-    reinstallable: !!row.created_by_customer,
+    reinstallable: !!row.created_by_customer && !computeManaged(row.vmid),
+    catalogManaged: computeManaged(row.vmid),
     expiry: expiryInfo(row, expirySettings()),
     name: row.label || guest?.name || (row.spec && JSON.parse(row.spec).hostname) || `Server ${row.vmid}`,
     hostname: guest?.name ?? null,
@@ -144,6 +148,7 @@ export default async function vmRoutes(app) {
   app.addHook('preHandler', async (req) => {
     if (req.params.vmid === undefined) return;
     req.accessRow = await authorizedRow(req, Number(req.params.vmid), routeAction(req));
+    if (!['GET', 'HEAD'].includes(req.method)) assertComputeIdle(Number(req.params.vmid));
     if (req.accessRow.access_managed && routeAction(req) === 'resize') {
       const spec = JSON.parse(req.accessRow.spec ?? '{}');
       req.account = withLimits(req.account, cloneRule(req, spec.accessRuleId));
@@ -165,7 +170,7 @@ export default async function vmRoutes(app) {
       const permissions = await capabilities(req, row, guests.get(row.vmid));
       return { ...summarize(row, guests.get(row.vmid)), permissions,
         deletable: !!row.created_by_customer && permissions.includes('delete'),
-        reinstallable: !!row.created_by_customer && permissions.includes('reinstall') };
+        reinstallable: !!row.created_by_customer && !computeManaged(row.vmid) && permissions.includes('reinstall') };
     }));
   });
 
@@ -183,9 +188,10 @@ export default async function vmRoutes(app) {
     // Version number only; commit, build date and update status stay admin-only.
     const panelVersion = config.showVersionToCustomers ? versionInfo.version : null;
     const backups = backupsAvailableFor(a.id,customer?.id);
-    if (!a.can_create) return { customer:context, canCreate: false, network, vpn, tailscale, panelVersion, backups, authorization, cloneDestinations: [] };
+    const offerings = customer ? customerOfferings(customer.id) : null;
+    if (!a.can_create) return { customer:context, canCreate: false, offerings, network, vpn, tailscale, panelVersion, backups, authorization, cloneDestinations: [] };
     return {
-      customer:context, canCreate: true,
+      customer:context, canCreate: true, offerings,
       personalCreation: !!req.account.can_create,
       limits: limitsOf(a),
       usage: await usageOf(a.id,customer?.id),
@@ -200,6 +206,9 @@ export default async function vmRoutes(app) {
     };
   });
 
+  app.get('/api/compute-offerings', async req => customerOfferings(requireCustomer(req).id));
+  app.get('/api/compute-allocations', async req => ({ events: allocationHistory(requireCustomer(req).id) }));
+
   app.get('/api/templates', async (req, reply) => {
     const grants = cloneRules(req);
     if (!req.account.can_create && !grants.length) return reply.code(403).send({ error: 'Creating servers is not enabled for your account' });
@@ -212,11 +221,14 @@ export default async function vmRoutes(app) {
     schema: {
       body: {
         type: 'object',
-        required: ['hostname', 'templateId', 'cores', 'memoryMb', 'diskGb'],
+        required: ['hostname', 'templateId', 'diskGb'],
         additionalProperties: false,
         properties: {
           hostname: { type: 'string', pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' },
           templateId: TEMPLATE_ID,
+          sizeId: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,63}$' },
+          storageClassId: { type: 'string', enum: ['basic', 'standard', 'fast'] },
+          haEnabled: { type: 'boolean' },
           accessRuleId: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,63}$' },
           cores: { type: 'integer', minimum: 1, maximum: 128 },
           memoryMb: { type: 'integer', minimum: 512, maximum: 1048576 },
@@ -477,7 +489,7 @@ export default async function vmRoutes(app) {
       resizeLimits: row.access_managed && permissions.includes('resize')
         ? cloneRules(req).find((r) => r.id === JSON.parse(row.spec ?? '{}').accessRuleId)?.clone.limits ?? null : null,
       deletable: !!row.created_by_customer && permissions.includes('delete'),
-      reinstallable: !!row.created_by_customer && permissions.includes('reinstall'),
+      reinstallable: !!row.created_by_customer && !computeManaged(row.vmid) && permissions.includes('reinstall'),
       os: cfg.ostype ?? null,          // raw Proxmox ostype, e.g. "win11", "l26"
       osFamily: osOf(row, cfg.ostype),  // 'windows' | 'linux' | null
       // for the reinstall form: current image and disk size
@@ -489,7 +501,7 @@ export default async function vmRoutes(app) {
       ipconfig: cfg.ipconfig0 ?? cfg.net0 ?? null,
       ips,
       pendingSize,
-      resizable: !!row.created_by_customer && permissions.includes('resize'),
+      resizable: !!row.created_by_customer && !computeManaged(row.vmid) && permissions.includes('resize'),
       netin: status.netin ?? 0,
       netout: status.netout ?? 0,
     };

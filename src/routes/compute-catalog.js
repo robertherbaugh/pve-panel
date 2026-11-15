@@ -1,3 +1,5 @@
+import { computeOperations } from '../compute-state.js';
+import { reconcileComputeOperation } from '../provision.js';
 import { audit } from '../db.js';
 import { computeCatalog, saveComputeCatalog, computeProfile, saveComputeProfile } from '../compute-catalog.js';
 import { computeInventory, previewCompute } from '../compute-inventory.js';
@@ -5,6 +7,8 @@ import { computeInventory, previewCompute } from '../compute-inventory.js';
 export default async function computeCatalogRoutes(app) {
   app.addHook('preHandler', app.requireAdmin);
   app.addHook('onSend', async (_req, reply, payload) => { reply.header('Cache-Control', 'no-store'); return payload; });
+  app.get('/api/admin/compute-operations', async () => ({ operations: computeOperations() }));
+  app.post('/api/admin/compute-operations/:id/reconcile', { schema: { body: { type: 'object', additionalProperties: false, required: ['action'], properties: { action: { enum: ['resume', 'release'] } } } } }, async (req) => reconcileComputeOperation(req, req.params.id, req.body.action));
   app.get('/api/admin/compute-catalog', async () => computeCatalog());
   app.put('/api/admin/compute-catalog', async (req) => {
     const saved = saveComputeCatalog(req.body);

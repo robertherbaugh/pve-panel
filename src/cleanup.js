@@ -1,5 +1,7 @@
+import { verifyComputeDeleted } from './compute-placement.js';
 // Destroying servers and deleting customers completely (admin actions).
 
+import { assertComputeIdle, releaseCompute } from './compute-state.js';
 import { hasSharedResources } from './tenancy.js';
 import { db, audit } from './db.js';
 import { config } from './config.js';
@@ -26,6 +28,7 @@ export function isProtected(vmid, guest) {
  * removes it from the panel. Resolves when Proxmox has finished.
  */
 export async function destroyServer(actor, vmid) {
+  assertComputeIdle(vmid);
   actor={account:actor.account,ip:actor.ip,customerId:actor.customerId??db.prepare('SELECT customer_id FROM vms WHERE vmid=?').get(vmid)?.customer_id};
   const guest = (await clusterGuests(true)).get(vmid);
   if (isProtected(vmid, guest)) throw new CleanupError(403, `Server ${vmid} is protected and can't be deleted here`);
@@ -38,6 +41,8 @@ export async function destroyServer(actor, vmid) {
     }
     await waitTask(guest.node, await pve.del(path, { purge: 1, 'destroy-unreferenced-disks': 1 }));
   }
+  await verifyComputeDeleted(vmid);
+  releaseCompute(vmid);
   db.prepare('DELETE FROM vms WHERE vmid = ?').run(vmid);
   db.prepare('DELETE FROM tasks WHERE vmid = ?').run(vmid);
   invalidateGuestCache();

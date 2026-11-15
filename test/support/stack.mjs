@@ -144,14 +144,18 @@ export async function startStack({ env = {}, mail = false } = {}) {
     AGENT_UNRESPONSIVE_SECONDS: '15',
     ...env,
   };
-  const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'src/server.js'], {
-    cwd: root, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'],
-  });
   const output = [];
-  child.stdout.on('data', (d) => output.push(d.toString()));
-  child.stderr.on('data', (d) => output.push(d.toString()));
-  let exited = null;
-  child.on('exit', (code) => { exited = code; });
+  let child, exited = null;
+  const launch = () => {
+    exited = null;
+    child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'src/server.js'], {
+      cwd: root, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout.on('data', d => output.push(d.toString()));
+    child.stderr.on('data', d => output.push(d.toString()));
+    child.on('exit', code => { exited = code ?? -1; });
+  };
+  launch();
 
   const customerUrl = `http://127.0.0.1:${port}`;
   const adminUrl = `http://127.0.0.1:${adminPort}`;
@@ -217,6 +221,18 @@ export async function startStack({ env = {}, mail = false } = {}) {
         const v = (await session.get('/api/vms')).json?.find((x) => x.vmid === vmid);
         return v && v.state !== 'creating' ? v : null;
       }, { timeout, interval: 500, what: `server ${vmid} to finish` });
+    },
+
+    async restartPanel() {
+      const old = child;
+      const ended = new Promise(resolve => old.once('exit', resolve));
+      old.kill('SIGKILL');
+      await ended;
+      launch();
+      await waitFor(async () => {
+        if (exited !== null) throw new Error(`Restart failed: ${output.join('').slice(-3000)}`);
+        try { return (await fetch(`${customerUrl}/healthz`)).ok && (await fetch(`${adminUrl}/healthz`)).ok; } catch { return false; }
+      }, { timeout: 20_000, what: 'panel restart' });
     },
 
     async stop() {

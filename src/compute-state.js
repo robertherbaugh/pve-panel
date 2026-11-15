@@ -40,7 +40,7 @@ export function priorRequest(customerId, userId, key, hash) {
   if (row && (row.user_id !== userId || row.request_hash !== hash)) fail('This request key already identifies a different request');
   return row;
 }
-export function beginOperation({ customerId, userId, vmid, kind = 'create', key = null, hash = null, plan, credentials = null }) {
+export function beginOperation({ customerId, userId, vmid, kind = 'create', key = null, hash = null, plan, credentials = null, onReserve = () => {} }) {
   const id = randomUUID();
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -50,6 +50,7 @@ export function beginOperation({ customerId, userId, vmid, kind = 'create', key 
       VALUES(?,?,?,?,?,'reserved',?,?,?,?)`).run(id, customerId, userId, vmid, kind, key, hash, JSON.stringify(plan), credentials ? seal(`compute:${id}`, JSON.stringify(credentials)) : null);
     db.prepare(`INSERT INTO compute_reservations(operation_id,vmid,node,storage,storage_key,cores,memory_mb,disk_gb,state)
       VALUES(?,?,?,?,?,?,?,?,'held')`).run(id, vmid, plan.node, plan.storage, plan.storageKey, plan.cores, plan.memoryMb, plan.diskGb);
+    onReserve(id);
     db.exec('COMMIT');
   } catch (err) { db.exec('ROLLBACK'); throw err; }
   return operationById(id);
@@ -64,6 +65,18 @@ export function updateOperation(id, state, { upid = null, taskNode = null, error
 }
 export function heldReservations() {
   return db.prepare("SELECT * FROM compute_reservations WHERE state IN ('held','committed')").all();
+}
+export const activeComputeOperation = (vmid) => parse(db.prepare("SELECT * FROM compute_operations WHERE vmid=? AND state NOT IN ('complete','cancelled') ORDER BY created_at DESC LIMIT 1").get(vmid));
+export function assertComputeIdle(vmid) {
+  if (activeComputeOperation(vmid)) fail('This VM has an unresolved compute operation. The provider must reconcile it first.');
+}
+export const computeManaged = (vmid) => !!allocationFor(vmid) || !!activeComputeOperation(vmid);
+export function computeOperations() {
+  return db.prepare('SELECT id FROM compute_operations ORDER BY created_at DESC LIMIT 200').all().map(({ id }) => {
+    const o = operationById(id);
+    return { id: o.id, vmid: o.vmid, customerId: o.customer_id, kind: o.kind, state: o.state, error: o.error,
+      node: o.plan.node, storage: o.plan.storage, sizeId: o.plan.offering?.sizeId, createdAt: o.created_at, updatedAt: o.updated_at };
+  });
 }
 export const pendingOperations = () => db.prepare("SELECT id FROM compute_operations WHERE state NOT IN ('complete','cancelled','review')").all().map((r) => operationById(r.id));
 export const allocationFor = (vmid) => {
@@ -81,12 +94,13 @@ export function recordAllocation(vmid, customerId, offering, kind = 'created') {
   db.prepare('INSERT INTO compute_allocation_events(allocation_id,kind,offering,occurred_at) VALUES(?,?,?,?)').run(id, kind, value, now);
   return allocationFor(vmid);
 }
-export function completeOperation(id) {
+export function completeOperation(id, onComplete = () => {}) {
   const op = operationById(id);
   if (!op) fail('Compute operation not found', 404);
   db.exec('BEGIN IMMEDIATE');
   try {
     recordAllocation(op.vmid, op.customer_id, op.plan.offering, op.kind === 'create' ? 'created' : op.kind);
+    onComplete();
     db.prepare("UPDATE compute_reservations SET state='committed' WHERE operation_id=?").run(id);
     db.prepare("UPDATE compute_operations SET state='complete',credentials=NULL,error=NULL,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").run(id);
     db.exec('COMMIT');

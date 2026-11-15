@@ -20,6 +20,7 @@ import { startSetupCheckScheduler } from './setupcheck.js';
 import { startBackupScheduler } from './backups.js';
 import authPlugin from './auth.js';
 import vmRoutes from './routes/vms.js';
+import { startComputeRecovery } from './provision.js';
 import consoleRoutes from './routes/console.js';
 import vpnRoutes from './routes/vpn.js';
 import { syncOnStartup } from './vpn.js';
@@ -145,6 +146,7 @@ startExpiryScheduler(admin.log);
 startUpdateTracker(admin.log);
 startSetupCheckScheduler(admin.log);
 startBackupScheduler(admin.log);
+startComputeRecovery(admin.log);
 
 await customer.listen({ port: config.port, host: config.host });
 await admin.listen({ port: config.adminPort, host: config.adminHost });
