@@ -43,7 +43,7 @@ test('user icons target the correct identity and Add user validates, retries and
   await expect(modal).toHaveCount(0);
   await expect(page.locator('tr[data-user]', { hasText: 'new-modal-user@example.com' })).toContainText('No memberships');
   await expect(page.getByRole('button', { name: 'Add user', exact: true })).toBeFocused();
-  if (process.env.USER_CONTROLS_SCREENSHOTS) await page.screenshot({ path: `${process.env.USER_CONTROLS_SCREENSHOTS}/pve-users-icons.png`, fullPage: true });
+  if (process.env.USER_CONTROLS_SCREENSHOTS) { await page.locator('[data-dismiss-note]').click(); await page.locator('#toasts').evaluateAll(nodes => nodes.forEach(n => n.replaceChildren())); await page.screenshot({ path: `${process.env.USER_CONTROLS_SCREENSHOTS}/pve-users-icons.png`, fullPage: true }); }
 });
 
 test('invitation mode omits passwords and the creation modal fits mobile screens', async ({ page }) => {
