@@ -107,9 +107,10 @@ export async function startMockPve({ port = 0 } = {}) {
       const onCmdLine = key && script.includes(key);
       log('TS up', vmid, 'key on command line:', onCmdLine ? 'YES!' : 'no', '| key file present:', !!key);
       if (!key || key.startsWith('tskey-auth-bad')) return { out: '', code: 1, err: 'backend error: invalid key: API key does not exist\n' };
+      if (cluster.echoTsKeyFailure) return { out: '', code: 1, err: `backend error: invalid key ${key}` };
       const host = /--hostname=([a-z0-9-]+)/.exec(script)?.[1];
       const routes = /--advertise-routes=(\S+)/.exec(script)?.[1] ?? null;
-      vm.ts = { ip: `100.101.102.${vmid % 250}`, host, routes };
+      vm.ts = { ip: `100.101.102.${vmid % 250}`, host, routes,loginServer:/--login-server=['\"]?([^'\"\s]+)/.exec(script)?.[1]??'' };
       vm.tsKey = undefined;
       return { out: script.includes('--unattended') ? 'connected\n' : '', code: 0, err: '' };
     }

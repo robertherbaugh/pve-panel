@@ -1,3 +1,4 @@
+import { remoteAccessSettings } from './remote-access-settings.js';
 // Tailscale on customer servers, in the customer's OWN tailnet.
 //
 // The customer creates an auth key in their Tailscale account and pastes it in
@@ -66,7 +67,7 @@ async function installLinux(path, gateway) {
   }
 }
 
-async function upLinux(path, authKey, hostname, routes) {
+async function upLinux(path, authKey, hostname, routes, loginServer) {
   const keyFile = `/run/ts-authkey-${crypto.randomBytes(6).toString('hex')}`;
   const w = await agentExec(path, bash(`umask 077; cat > ${keyFile}`), 30_000, authKey);
   if (w.code !== 0) throw new TailscaleError(502, 'Could not hand the auth key to the server');
@@ -74,7 +75,7 @@ async function upLinux(path, authKey, hostname, routes) {
   try {
     r = await agentExec(path, bash(
       `tailscale up --auth-key=file:${keyFile} --hostname=${hostname} --reset`
-      + `${routes ? ` --advertise-routes=${routes}` : ''} --timeout=90s; rc=$?; `
+      + `${loginServer ? ` --login-server='${loginServer}'` : ''}${routes ? ` --advertise-routes=${routes}` : ''} --timeout=90s; rc=$?; `
       + `shred -u ${keyFile} 2>/dev/null || rm -f ${keyFile}; exit $rc`,
     ), 150_000, undefined, { retryIfLost: false }); // the key is used up: never run twice
   } catch (err) {
@@ -103,7 +104,7 @@ if (-not (Test-Path "$env:ProgramFiles\\Tailscale\\tailscale.exe")) {
   }
 }
 
-async function upWindows(path, authKey, hostname) {
+async function upWindows(path, authKey, hostname, loginServer) {
   const keyFile = `$env:SystemRoot\\Temp\\ts-authkey-${crypto.randomBytes(6).toString('hex')}`;
   let r;
   try {
@@ -113,7 +114,7 @@ $f = "${keyFile}"
 Set-Content -Path $f -Value $key -NoNewline
 icacls $f /inheritance:r /grant:r 'SYSTEM:F' 'Administrators:F' | Out-Null
 try {
-  $out = ${WIN_TS} up --unattended "--auth-key=file:$f" "--hostname=${hostname}" --reset --timeout=90s 2>&1
+  $out = ${WIN_TS} up --unattended "--auth-key=file:$f" "--hostname=${hostname}" ${loginServer?`'--login-server=${loginServer}'`:''} --reset --timeout=90s 2>&1
   if ($LASTEXITCODE -ne 0) { throw ($out | Out-String) }
 } finally { Remove-Item $f -Force -ErrorAction SilentlyContinue }
 'connected'
@@ -164,6 +165,7 @@ export async function tailscaleStatus(req, vmid) {
   const net = networkOf(req.account.id,req.customer?.id);
   const base = {
     available: true,
+    ...((r&&['connected','installing','disconnecting'].includes(r.state))?{provider:r.provider,loginServer:r.login_server}:remoteAccessSettings()),
     os,
     gatewayPossible: os === 'linux' && !!net,
     subnet: net?.subnet ?? null,
@@ -192,8 +194,10 @@ const AUTH_KEY = /^tskey-[A-Za-z0-9_-]{10,200}$/;
 /** Starts install + connect in the background; returns right away. */
 export async function connectTailscale(req, vmid, { authKey, mode, hostname }) {
   if (!config.tailscale.enabled) throw new TailscaleError(404, 'Tailscale is not available');
-  if (!AUTH_KEY.test(authKey ?? '')) {
-    throw new TailscaleError(400, 'That doesn\'t look like a Tailscale auth key. It starts with "tskey-".');
+  const remote=remoteAccessSettings();
+  const valid=remote.provider==='headscale' ? /^(?:[a-fA-F0-9]{48,128}|hskey-auth-[A-Za-z0-9_-]{10,200})$/.test(authKey??'') : AUTH_KEY.test(authKey??'');
+  if (!valid) {
+    throw new TailscaleError(400,remote.provider==='headscale'?'Provide a Headscale pre-authentication key.':'Provide a Tailscale auth key that starts with tskey-.');
   }
   if (!HOSTNAME.test(hostname ?? '')) {
     throw new TailscaleError(400, 'Use lowercase letters, numbers and hyphens for the Tailscale name');
@@ -220,11 +224,11 @@ export async function connectTailscale(req, vmid, { authKey, mode, hostname }) {
   }
 
   db.prepare(`
-    INSERT INTO tailscale (vmid, user_id, mode, state, progress, error, hostname, ts_ip, customer_id)
-    VALUES (?, ?, ?, 'installing', 'Installing Tailscale', NULL, ?, NULL, ?)
+    INSERT INTO tailscale (vmid, user_id, mode, state, progress, error, hostname, ts_ip, customer_id, provider, login_server)
+    VALUES (?, ?, ?, 'installing', 'Installing Tailscale', NULL, ?, NULL, ?, ?, ?)
     ON CONFLICT(vmid) DO UPDATE SET customer_id=excluded.customer_id, user_id=excluded.user_id, mode = excluded.mode, state = 'installing', progress = excluded.progress,
-      error = NULL, hostname = excluded.hostname, ts_ip = NULL, updated_at = datetime('now')
-  `).run(vmid, req.account.id, mode, hostname,req.customer.id);
+      error = NULL, hostname = excluded.hostname, ts_ip = NULL, provider=excluded.provider, login_server=excluded.login_server, updated_at = datetime('now')
+  `).run(vmid, req.account.id, mode, hostname,req.customer.id,remote.provider,remote.loginServer);
   audit(req, vmid, 'tailscale_connect_started', { mode, hostname });
   const actor = { account: { id: req.account.id }, ip: req.ip };
 
@@ -233,7 +237,7 @@ export async function connectTailscale(req, vmid, { authKey, mode, hostname }) {
       const routes = mode === 'gateway' ? net.subnet : null;
       if (os === 'windows') await installWindows(path); else await installLinux(path, mode === 'gateway');
       setState(vmid, { progress: 'Connecting to your tailnet' });
-      const up = os === 'windows' ? await upWindows(path, authKey, hostname) : await upLinux(path, authKey, hostname, routes);
+      const up = os === 'windows' ? await upWindows(path, authKey, hostname, remote.loginServer) : await upLinux(path, authKey, hostname, routes, remote.loginServer);
       const live = await liveStatus(path, os).catch(() => null);
       if (up === 'unknown' && live?.backend !== 'Running') {
         // The agent lost the result and Tailscale isn't running: it didn't connect.
@@ -243,8 +247,9 @@ export async function connectTailscale(req, vmid, { authKey, mode, hostname }) {
       setState(vmid, { state: 'connected', progress: null, ts_ip: live?.ip ?? null });
       audit(actor, vmid, 'tailscale_connected', { mode, ip: live?.ip ?? null });
     } catch (err) {
-      setState(vmid, { state: 'failed', progress: null, error: String(err.message).slice(0, 500) });
-      audit(actor, vmid, 'tailscale_connect_failed', { error: err.message });
+      const message=String(err.message).replaceAll(authKey,'[redacted]');
+      setState(vmid, { state: 'failed', progress: null, error: message.slice(0, 500) });
+      audit(actor, vmid, 'tailscale_connect_failed', { error: message });
     }
   })();
 }

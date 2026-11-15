@@ -566,7 +566,7 @@ async function renderRemote(body) {
   let ts;
   try { ts = await api(`/api/vms/${vmid}/tailscale`); } catch (err) { body.innerHTML = ''; return fail(err); }
   if (vmid !== state.selected || state.tab !== 'remote' || state.view !== 'server') return;
-  const vm = state.detail;
+  const vm = state.detail,headscale=ts.provider==='headscale',provider=headscale?'Headscale':'Tailscale';
 
   if (ts.state === 'installing' || ts.state === 'disconnecting') {
     body.innerHTML = `
@@ -619,8 +619,8 @@ async function renderRemote(body) {
   const defaultName = (vm.name || `server-${vm.vmid}`).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63);
   body.innerHTML = `
     <div class="ts">
-      <h2 class="h2">Connect with Tailscale</h2>
-      <p class="muted ts-lede">Use your own Tailscale account to reach ${esc(vm.name)} from your laptop or phone.
+      <h2 class="h2">Connect with ${provider}</h2>
+      <p class="muted ts-lede">${headscale?`Connect to ${esc(ts.loginServer)} with a Headscale pre-authentication key to reach ${esc(vm.name)}.`:`Use your own Tailscale account to reach ${esc(vm.name)} from your laptop or phone.`}
         This works in addition to the VPN of your provider.</p>
       ${ts.state === 'failed' && ts.error ? `<p class="error-box">${esc(ts.error)}</p>` : ''}
       ${blocked ? `<div class="notice warn"><p>${esc(blocked)}</p></div>` : ''}
@@ -640,8 +640,8 @@ async function renderRemote(body) {
           </label>
         </div>
         <label>Auth key
-          <input name="authKey" type="password" required autocomplete="off" spellcheck="false" placeholder="tskey-auth-…">
-          <span class="hint">Create one in your Tailscale admin console under Settings, Keys. Don't use an
+          <input name="authKey" type="password" required autocomplete="off" spellcheck="false" placeholder="${headscale?'Headscale pre-authentication key':'tskey-auth-…'}">
+          <span class="hint">${headscale?'Use a key scoped to your customer in Headscale.':'Create one in your Tailscale admin console under Settings, Keys.'} Don't use an
             ephemeral key: the server would disappear from your tailnet whenever it's offline.</span>
         </label>
         <label>Name in your tailnet
@@ -649,7 +649,7 @@ async function renderRemote(body) {
         </label>
         <p id="ts-error" class="form-error" role="alert"></p>
         <div class="row">
-          <button class="btn primary" ${blocked ? 'disabled' : ''}>${icon('link')}<span>Connect to Tailscale</span></button>
+          <button class="btn primary" ${blocked ? 'disabled' : ''}>${icon('link')}<span>Connect to ${provider}</span></button>
         </div>
       </form>
     </div>`;

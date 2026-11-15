@@ -1,3 +1,4 @@
+import { remoteAccessSettings, saveRemoteAccessSettings } from '../remote-access-settings.js';
 import { backupReservations, reconcileBackupReservation } from '../compute-backups.js';
 import { computeOperations } from '../compute-state.js';
 import { reconcileComputeOperation } from '../provision.js';
@@ -8,6 +9,8 @@ import { computeInventory, previewCompute } from '../compute-inventory.js';
 export default async function computeCatalogRoutes(app) {
   app.addHook('preHandler', app.requireAdmin);
   app.addHook('onSend', async (_req, reply, payload) => { reply.header('Cache-Control', 'no-store'); return payload; });
+  app.get('/api/admin/remote-access',async()=>remoteAccessSettings());
+  app.put('/api/admin/remote-access',async req=>{const value=saveRemoteAccessSettings(req.body);audit(req,null,'admin_remote_access',{provider:value.provider,loginServer:value.loginServer});return value;});
   app.get('/api/admin/compute-backup-reservations', async () => ({ reservations: backupReservations() }));
   app.post('/api/admin/compute-backup-reservations/:id/reconcile', async req => {
     const result = await reconcileBackupReservation(Number(req.params.id));

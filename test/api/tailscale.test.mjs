@@ -2,6 +2,8 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { startStack, waitFor } from '../support/stack.mjs';
+import { DatabaseSync } from 'node:sqlite';
+import path from 'node:path';
 
 let stack;
 let lena;
@@ -56,4 +58,24 @@ test('a key Tailscale rejects ends in a clear failure', async () => {
   const s = await settled();
   assert.equal(s.state, 'failed');
   assert.match(s.error, /invalid key/);
+});
+test('Headscale uses a configured login server and keeps its key off command lines and out of the database',async()=>{
+ const admin=await stack.adminSession();
+ assert.equal((await admin.put('/api/admin/remote-access',{provider:'headscale',loginServer:'http://headscale.example.com'})).status,400);
+ assert.equal((await admin.put('/api/admin/remote-access',{provider:'headscale',loginServer:"https://headscale.example.com/';echo-bad"})).status,400);
+ const saved=await admin.put('/api/admin/remote-access',{provider:'headscale',loginServer:'https://headscale.example.com/'});assert.equal(saved.status,200,saved.text);
+ const key='0123456789abcdef'.repeat(4);
+ const r=await lena.post(`/api/vms/${vmid}/tailscale`,{authKey:key,mode:'server',hostname:'headscale-shop'});assert.equal(r.status,202,r.text);
+ const final=await settled();assert.equal(final.state,'connected',final.error);assert.equal(final.provider,'headscale');assert.equal(final.loginServer,'https://headscale.example.com');
+ assert.equal(stack.mock.vms.get(vmid).ts.loginServer,'https://headscale.example.com');assert.ok(!stack.logs().includes(key));
+ const sql=new DatabaseSync(path.join(stack.dir,'panel.db'));
+ try {
+  await lena.del(`/api/vms/${vmid}/tailscale`);stack.mock.cluster.echoTsKeyFailure=true;
+  assert.equal((await lena.post(`/api/vms/${vmid}/tailscale`,{authKey:key,mode:'server',hostname:'headscale-shop'})).status,202);
+  const failed=await settled();assert.equal(failed.state,'failed');assert.ok(failed.error.includes('[redacted]'));assert.ok(!failed.error.includes(key));
+  assert.ok(!JSON.stringify(sql.prepare('SELECT * FROM tailscale').all()).includes(key));assert.ok(!JSON.stringify(sql.prepare('SELECT * FROM audit_log').all()).includes(key));
+ }finally{stack.mock.cluster.echoTsKeyFailure=false;sql.close();}
+ assert.equal((await lena.post(`/api/vms/${vmid}/tailscale`,{authKey:key,mode:'server',hostname:'headscale-shop'})).status,202);await settled();
+ await admin.put('/api/admin/remote-access',{provider:'tailscale',loginServer:''});
+ assert.equal((await lena.get(`/api/vms/${vmid}/tailscale`)).json.provider,'headscale','existing connection retains its control server');
 });
