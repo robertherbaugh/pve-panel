@@ -1,3 +1,4 @@
+import { haPolicy, saveHaPolicy } from '../compute-ha-policy.js';
 import { remoteAccessSettings, saveRemoteAccessSettings } from '../remote-access-settings.js';
 import { backupReservations, reconcileBackupReservation } from '../compute-backups.js';
 import { computeOperations } from '../compute-state.js';
@@ -9,6 +10,8 @@ import { computeInventory, previewCompute } from '../compute-inventory.js';
 export default async function computeCatalogRoutes(app) {
   app.addHook('preHandler', app.requireAdmin);
   app.addHook('onSend', async (_req, reply, payload) => { reply.header('Cache-Control', 'no-store'); return payload; });
+  app.get('/api/admin/compute-ha-policy',async()=>haPolicy());
+  app.put('/api/admin/compute-ha-policy',async req=>{const saved=saveHaPolicy(req.body);audit(req,null,'admin_ha_policy',{revision:saved.revision});return saved;});
   app.get('/api/admin/remote-access',async()=>remoteAccessSettings());
   app.put('/api/admin/remote-access',async req=>{const value=saveRemoteAccessSettings(req.body);audit(req,null,'admin_remote_access',{provider:value.provider,loginServer:value.loginServer});return value;});
   app.get('/api/admin/compute-backup-reservations', async () => ({ reservations: backupReservations() }));

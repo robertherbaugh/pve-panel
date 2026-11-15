@@ -1,4 +1,5 @@
 import {renderRetainedBackups} from './retained-backups.js';
+import { configureHa } from './compute-ha.js';
 import { renderComputeServices } from './compute-services.js';
 import { renderSshKeys } from './ssh-keys.js';
 import {
@@ -408,6 +409,7 @@ function renderOverview(body) {
       <div><dt>${specIcon('disk')}Disk</dt><dd>${bytes(vm.maxdisk)}</dd></div>
       <div class="wide"><dt>${specIcon('globe')}IP addresses</dt><dd>${ips}</dd></div>
     </dl>
+    ${vm.offering?`<section class="security-card"><h2>HA Enabled: ${vm.offering.haEnabled?'Yes':'No'}</h2><p class="muted">Optional host failover recovery.</p>${state.account.customer?.role==='admin'&&can('power')?`<button class="btn" data-ha>${vm.offering.haEnabled?'Disable HA add-on…':'Enable HA add-on…'}</button>`:''}</section>`:''}
     ${vm.pendingSize ? `
       <div class="notice warn size-pending">
         <p><strong>Size change waiting for a restart:</strong> ${esc(vm.pendingSize.cores)} ${vm.pendingSize.cores === 1 ? 'core' : 'cores'},
@@ -1940,6 +1942,7 @@ $('#detail').addEventListener('click', (e) => {
     input.type = 'text';
   }
   if (t.hasAttribute('data-extend')) { extendExpiry(); return; }
+  if (t.hasAttribute('data-ha')) configureHa(state.detail,async()=>{await loadList();select(state.detail.vmid);}).catch(fail);
   if (t.hasAttribute('data-reinstall')) openReinstall();
   if (t.hasAttribute('data-resize')) openResize();
   if (t.hasAttribute('data-back-to-server') && state.detail) select(state.detail.vmid);

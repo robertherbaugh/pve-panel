@@ -208,6 +208,27 @@ export async function startMockPve({ port = 0 } = {}) {
     if (p === '/__vms') return send(res, [...vms.keys()]);
     if (p.startsWith('/__clearfw/')) { const v = vms.get(Number(p.split('/')[2])); v.fwRules = (v.fwRules ?? []).filter(r => r.type !== 'out'); return send(res, 'cleared'); }
     if (p === '/cluster/nextid') { const want = u.searchParams.get('vmid'); if (want) return vms.has(Number(want)) ? send(res,null,400,`VM ${want} already exists`) : send(res, want); let id=100; while (vms.has(id)) id++; return send(res, String(id)); }
+    if (p === '/cluster/status') return send(res,cluster.clusterStatus??[{type:'cluster',quorate:1}]);
+    if (p === '/cluster/ha/resources' && req.method==='GET') return send(res,cluster.haResources??[]);
+    if (p === '/cluster/ha/resources' && req.method==='POST') {
+      const b=await body(req);cluster.haResources??=[];
+      if(cluster.haResources.some(r=>r.sid===b.sid)) return send(res,null,409,'HA resource already exists');
+      cluster.haResources.push(b);return send(res,null);
+    }
+    if(p.startsWith('/cluster/ha/resources/')) {
+      const sid=decodeURIComponent(p.slice('/cluster/ha/resources/'.length)),r=(cluster.haResources??[]).find(r=>r.sid===sid);
+      if(!r) return send(res,null,404,'HA resource missing');
+      if(req.method==='PUT') {const b=await body(req);Object.assign(r,b);const vm=vms.get(Number(sid.split(':')[1]));if(vm)vm.status=b.state==='started'?'running':'stopped';return send(res,null);}
+      if(req.method==='DELETE'){cluster.haResources=cluster.haResources.filter(r=>r.sid!==sid);cluster.haRules=(cluster.haRules??[]).filter(r=>r.resources!==sid);return send(res,null);}
+      return send(res,r);
+    }
+    if(p==='/cluster/ha/rules' && req.method==='GET')return send(res,cluster.haRules??[]);
+    if(p==='/cluster/ha/rules' && req.method==='POST'){
+      const b=await body(req);cluster.haRules??=[];
+      if(cluster.haRules.some(r=>r.rule===b.rule))return send(res,null,409,'HA rule exists');
+      if(!(cluster.haResources??[]).some(r=>r.sid===b.resources))return send(res,null,400,'Unmanaged resource');
+      cluster.haRules.push({...b,strict:Number(b.strict)});if(cluster.loseHaRuleResponse){cluster.loseHaRuleResponse=false;return res.destroy();}return send(res,null);
+    }
     if (p === '/cluster/ha/status/current') return send(res, cluster.haStatus ?? []);
     if (/^\/nodes\/[^/]+\/network$/.test(p)) return send(res, cluster.networks ?? [{ iface: 'vmbr0', active: 1 }]);
     if (p === '/nodes') return cluster.inventoryDenied ? send(res, null, 403, 'Permission denied') : send(res, cluster.nodes ?? [{ node: 'pve1', status: 'online' }]);

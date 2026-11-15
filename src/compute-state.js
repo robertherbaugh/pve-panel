@@ -21,6 +21,10 @@ db.exec(`
     cores INTEGER NOT NULL, memory_mb INTEGER NOT NULL, disk_gb INTEGER NOT NULL,
     state TEXT NOT NULL CHECK(state IN ('held','committed','released'))
   );
+  CREATE TABLE IF NOT EXISTS compute_ha_reservations (
+    vmid INTEGER NOT NULL, node TEXT NOT NULL, cores INTEGER NOT NULL, memory_mb INTEGER NOT NULL,
+    state TEXT NOT NULL DEFAULT 'held', PRIMARY KEY(vmid,node)
+  );
   CREATE TABLE IF NOT EXISTS compute_staging_reservations (
     operation_id TEXT PRIMARY KEY REFERENCES compute_operations(id), vmid INTEGER NOT NULL,
     node TEXT NOT NULL, storage TEXT NOT NULL, storage_key TEXT NOT NULL,
@@ -75,7 +79,7 @@ export function updateOperation(id, state, { upid = null, taskNode = null, error
     updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(state, upid, taskNode, error, id);
 }
 export function heldReservations() {
-  return db.prepare("SELECT * FROM compute_reservations WHERE state IN ('held','committed') UNION ALL SELECT operation_id,vmid,node,storage,storage_key,0 AS cores,0 AS memory_mb,disk_gb,state FROM compute_staging_reservations WHERE state='held'").all();
+  return db.prepare("SELECT * FROM compute_reservations WHERE state IN ('held','committed') UNION ALL SELECT operation_id,vmid,node,storage,storage_key,0 AS cores,0 AS memory_mb,disk_gb,state FROM compute_staging_reservations WHERE state='held' UNION ALL SELECT 'ha:'||vmid,vmid,node,'' AS storage,'' AS storage_key,cores,memory_mb,0 AS disk_gb,'held' AS state FROM compute_ha_reservations WHERE state!='released'").all();
 }
 export const activeComputeOperation = (vmid) => parse(db.prepare("SELECT * FROM compute_operations WHERE vmid=? AND state NOT IN ('complete','cancelled') ORDER BY created_at DESC LIMIT 1").get(vmid));
 export function assertComputeIdle(vmid) {
@@ -137,6 +141,7 @@ export function releaseCompute(vmid) {
     }
     db.prepare("UPDATE compute_reservations SET state='released' WHERE vmid=?").run(vmid);
     db.prepare("UPDATE compute_staging_reservations SET state='released' WHERE vmid=?").run(vmid);
+    db.prepare("UPDATE compute_ha_reservations SET state='released' WHERE vmid=?").run(vmid);
     db.prepare("UPDATE compute_operations SET state='cancelled',credentials=NULL,updated_at=? WHERE vmid=? AND state!='complete'").run(now, vmid);
     db.exec('COMMIT');
   } catch (err) { db.exec('ROLLBACK'); throw err; }

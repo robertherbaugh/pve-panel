@@ -1,3 +1,4 @@
+import { catalogPower, setCustomerHa } from '../compute-ha.js';
 import { backupUsage } from '../compute-backups.js';
 import { computeManaged, assertComputeIdle, allocationFor } from '../compute-state.js';
 import { Readable } from 'node:stream';
@@ -515,6 +516,8 @@ export default async function vmRoutes(app) {
     };
   });
 
+  app.post('/api/vms/:vmid/ha',{schema:{body:{type:'object',additionalProperties:false,required:['enabled'],properties:{enabled:{type:'boolean'},policyRevision:{type:'integer',minimum:0},slaVersion:{type:'string',maxLength:100},msaVersion:{type:'string',maxLength:100},accept:{type:'boolean'}}}}},async(req,reply)=>reply.code(202).send(await setCustomerHa(req,req.accessRow,req.body)));
+
   // Power actions
   app.post('/api/vms/:vmid/power/:action', {
     config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
@@ -527,7 +530,8 @@ export default async function vmRoutes(app) {
     if (row.expired_at && ['start', 'reboot'].includes(action)) {
       return reply.code(403).send({ error: 'This server has expired. Extend it to use it again.' });
     }
-    const upid = await pve.post(`${path}/status/${action}`);
+    const ha=await catalogPower(req,row,guest,action);
+    const upid = ha ? ha.upid : await pve.post(`${path}/status/${action}`);
     return recordTask(req, guest, upid, `power_${action}`);
   });
 

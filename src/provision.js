@@ -1,3 +1,4 @@
+import { assertNoHa, runHaOperation } from './compute-ha.js';
 import { runCatalogResize, lifecycleStep, lifecycleGuest, lifecycleFailed } from './compute-lifecycle.js';
 import { resolveSshKeys } from './ssh-keys.js';
 import { db, audit } from './db.js';
@@ -551,6 +552,7 @@ export async function reinstallServer(req, row, input) {
     }
     const net = config.network.enabled ? await ensureNetwork(account.id,row.customer_id) : null;
     if (allocation) {
+      await assertNoHa(row.vmid);
       if (!guest || guest.type!=='qemu' || guest.status!=='stopped' || guest.lock || oldCfg.lock) throw new ProvisionError(409,'Stop the VM and wait for its tasks before reinstalling');
       if (allocation.offering.haEnabled) throw new ProvisionError(409,'Disable HA before reinstalling this VM');
       if (Object.entries((await pve.get(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/config`))).filter(([k,v])=>/^(scsi|sata|virtio|ide)\d+$/.test(k)&&!/media=cdrom|cloudinit/.test(String(v))&&!String(v).startsWith('none')).length!==1) throw new ProvisionError(400,'Catalog images must have one data disk');
@@ -703,6 +705,7 @@ export async function resizeServer(req, row, input) {
     if (over.length) throw new ProvisionError(409, `This exceeds your plan: ${over.join(', ')}`);
 
     if (allocation) {
+      await assertNoHa(row.vmid);
       if (guest.status !== 'stopped' || cfg.lock || guest.lock) throw new ProvisionError(409,'Stop the VM and wait for its tasks before changing its catalog size');
       if (allocation.offering.haEnabled) throw new ProvisionError(409,'Disable HA before changing this VM size');
       const pool=oldSpec.pool ?? config.pve.pool, storage=String(cfg[disk]).split(':')[0];
@@ -780,6 +783,7 @@ export async function resizeServer(req, row, input) {
 /** Destroys a customer-created server (must be stopped) and removes its record. */
 export async function deleteServer(req, row) {
   assertComputeIdle(row.vmid);
+  if (computeManaged(row.vmid)) await assertNoHa(row.vmid);
   const guests = await clusterGuests(true);
   const guest = guests.get(row.vmid);
 
@@ -851,6 +855,7 @@ async function runCatalogReinstall(id) {
 
 export function startComputeRecovery(log) {
   for (const op of pendingOperations()) {
+    if (['ha-enabled','ha-disabled'].includes(op.kind)) {runHaOperation(op.id);continue;}
     if (op.kind === 'restored') continue; // The backup queue owns restore recovery.
     if (op.kind === 'reinstalled') { runCatalogReinstall(op.id); continue; }
     if (op.kind === 'resized') { runCatalogResize(op.id); continue; }
@@ -872,6 +877,7 @@ export function startComputeRecovery(log) {
 // Resume only an existing, identifiable VM. Never retry a clone POST.
 export async function reconcileComputeOperation(req, id, action) {
   const op = operationById(id);
+  if (op?.state==='review' && ['ha-enabled','ha-disabled'].includes(op.kind) && action==='resume') {updateOperation(id,'configuring');runHaOperation(id);return {accepted:true};}
   if (op?.state==='review' && op.kind==='restored' && action==='resume') return resumeCatalogRestore(id);
   if (op?.kind==='reinstalled' && !operationStep(id,'clone')) throw new ProvisionError(409,'An unknown deletion requires provider investigation');
   if (op?.state === 'review' && op.kind === 'resized' && action === 'resume') {

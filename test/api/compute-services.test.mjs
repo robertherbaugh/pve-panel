@@ -39,3 +39,55 @@ test('customer administrators select backup service without changing provider qu
  sql.prepare("UPDATE customer_memberships SET role='admin' WHERE customer_id=? AND user_id=?").run(customerId,user.userId);
  const off=await user.put('/api/compute-services',{revision:r.json.revision,backupServiceEnabled:false});assert.equal(off.status,200,off.text);
 });
+let vmid,policy;
+test('HA policy needs verified nodes and published agreements, with no VM HA changes by default',async()=>{
+ const p=(await admin.get('/api/admin/compute-ha-policy')).json;assert.equal(p.enabled,false);
+ assert.equal((await admin.put('/api/admin/compute-ha-policy',{...p,enabled:true})).status,400);
+ policy={revision:p.revision,enabled:true,nodes:['pve1','pve2','pve3'],slaVersion:'2026-11',msaVersion:'2026-11',terms:'HA restarts the VM after host failure. The HA add-on changes service commitments.',infrastructureVerified:true};
+ const r=await admin.put('/api/admin/compute-ha-policy',policy);assert.equal(r.status,200,r.text);policy=r.json;
+ assert.equal((await user.put('/api/admin/compute-ha-policy',policy)).status,404);
+ const created=await create(input('ha-vm'));assert.equal(created.status,202,JSON.stringify(created.json));vmid=created.json.vmid;
+ const settled=await stack.serverSettled(user,vmid);assert.equal(settled.state,'ready',settled.error);stack.mock.vms.get(vmid).status='stopped';
+ assert.equal((stack.mock.cluster.haResources??[]).length,0);
+});
+const enable=()=>user.post(`/api/vms/${vmid}/ha`,{enabled:true,policyRevision:policy.revision,slaVersion:policy.slaVersion,msaVersion:policy.msaVersion,accept:true});
+test('HA rejects missing acceptance and local volumes, then reserves failover capacity and creates strict native affinity',async()=>{
+ assert.equal((await user.post(`/api/vms/${vmid}/ha`,{enabled:true})).status,400);
+ stack.mock.perms['/'].push('Sys.Console');
+ stack.mock.cluster.nodes.push({node:'pve3',status:'online',maxcpu:32,maxmem:128*2**30,mem:2**30});
+ stack.mock.cluster.storageInventories.pve3=structuredClone(stack.mock.cluster.storageInventories.pve2);
+ stack.mock.cluster.haStatus=['pve1','pve2','pve3'].map(node=>({type:'lrm',node,status:'active'}));
+ let c=catalogBody((await admin.get('/api/admin/compute-catalog')).json);c.classes.find(c=>c.id==='fast').bindings.push({node:'pve3',storage:'nvme',purpose:'vm'});assert.equal((await admin.put('/api/admin/compute-catalog',c)).status,200);
+ assert.equal((await enable()).status,409);assert.equal(sql.prepare('SELECT count(*) n FROM compute_ha_reservations').get().n,0);
+ for(const node of ['pve1','pve2','pve3'])stack.mock.cluster.storageInventories[node].find(s=>s.storage==='nvme').shared=1;
+ const r=await enable();assert.equal(r.status,202,r.text);const settled=await stack.serverSettled(user,vmid);assert.equal(settled.state,'ready',settled.error);
+ assert.equal((await user.get(`/api/vms/${vmid}`)).json.offering.haEnabled,true);
+ assert.equal(sql.prepare("SELECT count(*) n FROM compute_ha_reservations WHERE vmid=? AND state='held'").get(vmid).n,3);
+ assert.equal(stack.mock.cluster.haResources[0].state,'stopped');assert.equal(stack.mock.cluster.haRules[0].strict,1);assert.equal(stack.mock.cluster.haRules[0].resources,`vm:${vmid}`);
+});
+test('HA power follows native requested state and destructive operations require HA removal',async()=>{
+ stack.mock.cluster.haRules[0].strict=0;
+ assert.equal((await user.post(`/api/vms/${vmid}/power/start`)).status,409);assert.equal(stack.mock.cluster.haResources[0].state,'stopped');
+ stack.mock.cluster.haRules[0].strict=1;
+ stack.mock.cluster.haRules[0].errors=['Conflicting affinity'];
+ assert.equal((await user.post(`/api/vms/${vmid}/power/start`)).status,409);delete stack.mock.cluster.haRules[0].errors;
+ assert.equal((await user.post(`/api/vms/${vmid}/power/start`)).status,200);assert.equal(stack.mock.cluster.haResources[0].state,'started');
+ assert.equal((await user.del(`/api/vms/${vmid}`)).status,409);
+ assert.equal((await admin.put('/api/admin/compute-ha-policy',{...policy,terms:'Changed commitments'})).status,409);
+ assert.equal((await user.post(`/api/vms/${vmid}/power/shutdown`)).status,200);assert.equal(stack.mock.cluster.haResources[0].state,'stopped');
+ const disabled=await user.post(`/api/vms/${vmid}/ha`,{enabled:false});assert.equal(disabled.status,202,disabled.text);
+ const settled=await stack.serverSettled(user,vmid);assert.equal(settled.state,'ready',settled.error);
+ assert.equal(stack.mock.cluster.haResources.length,0);assert.equal(stack.mock.cluster.haRules.length,0);assert.equal(sql.prepare("SELECT count(*) n FROM compute_ha_reservations WHERE state='held'").get().n,0);
+});
+test('uncertain HA enrollment retains failover holds and reconciles its existing rule without duplication',async()=>{
+ stack.mock.cluster.loseHaRuleResponse=true;
+ const r=await enable();assert.equal(r.status,202,r.text);const settled=await stack.serverSettled(user,vmid);assert.equal(settled.state,'failed');
+ assert.equal(sql.prepare('SELECT state FROM compute_operations WHERE id=?').get(r.json.operationId).state,'review');
+ assert.equal(sql.prepare("SELECT count(*) n FROM compute_ha_reservations WHERE state='held'").get().n,3);
+ assert.equal((await user.del(`/api/vms/${vmid}`)).status,409);
+ const resumed=await admin.post(`/api/admin/compute-operations/${r.json.operationId}/reconcile`,{action:'resume'});assert.equal(resumed.status,200,resumed.text);
+ const ready=await stack.serverSettled(user,vmid);assert.equal(ready.state,'ready',ready.error);assert.equal(stack.mock.cluster.haRules.length,1);
+ for(const node of stack.mock.cluster.nodes)node.maxcpu=2;
+ const next=await create(input('no-ha-spare',{sizeId:'medium'}));assert.equal(next.status,409,JSON.stringify(next.json));
+ for(const node of stack.mock.cluster.nodes)node.maxcpu=32;
+});

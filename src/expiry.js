@@ -1,3 +1,4 @@
+import { catalogPower } from './compute-ha.js';
 // Server expiry (opt-in per customer, or per server):
 //   reminders (default 7 and 1 days before) → stopped at expiry, customer can't
 //   start it → grace period (default 14 days, data kept, one-click extension) →
@@ -187,7 +188,8 @@ async function runOnce({ log, now = Date.now() } = {}) {
             // Expired: stop it (data stays), customer can no longer start it
             const guest = guests.get(row.vmid);
             if (guest && guest.status !== 'stopped') {
-              await waitTask(guest.node, await pve.post(`${guestPath(guest)}/status/stop`));
+              const ha=await catalogPower(actor,row,guest,'stop');
+              if(!ha) await waitTask(guest.node, await pve.post(`${guestPath(guest)}/status/stop`));
             }
             db.prepare('UPDATE vms SET expired_at = ? WHERE vmid = ?').run(new Date(now).toISOString(), row.vmid);
             const deleteAt = new Date(now + settings.graceDays * DAY).toISOString();

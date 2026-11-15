@@ -1,3 +1,4 @@
+import { haPolicy } from './compute-ha-policy.js';
 import { backupDiskHoldsGb } from './compute-backups.js';
 import { db } from './db.js';
 import { config } from './config.js';
@@ -13,7 +14,7 @@ export function customerOfferings(customerId) {
     enabled: p.catalogEnabled, revision: c.revision, profileRevision: p.revision,
     sizes: c.sizes.filter((s) => s.enabled && (p.sizeIds === null || p.sizeIds.includes(s.id))),
     classes: c.classes.filter((s) => s.enabled && p.storageClassIds.includes(s.id)).map(({ id, name, description }) => ({ id, name, description })),
-    haAvailable: false, backupServiceEnabled: p.backupServiceEnabled, backupServiceIncluded: p.backupServiceIncluded,
+    haAvailable: p.haAllowed && haPolicy().enabled, backupServiceEnabled: p.backupServiceEnabled, backupServiceIncluded: p.backupServiceIncluded,
     backupStorageIncluded: false, backupClassId: 'basic', billingMode: 'reservation',
   };
 }
@@ -31,7 +32,7 @@ export function resolveOffering(customerId, spec, excludeVmid = null) {
   if (!size || !cls) fail('Choose an available VM size and storage class', 400);
   if ((spec.cores !== undefined && spec.cores !== size.cores) || (spec.memoryMb !== undefined && spec.memoryMb !== size.memoryMb)) fail('CPU and memory must match the selected VM size', 400);
   if (spec.diskGb < size.minDiskGb) fail(`This VM size needs at least ${size.minDiskGb} GiB of disk`, 400);
-  if (spec.haEnabled) fail('HA activation is not available yet', 400);
+  if (spec.haEnabled) fail('Create the VM, then enable its HA add-on after accepting the service terms', 400);
   const used = db.prepare('SELECT spec FROM vms WHERE customer_id=? AND vmid!=?').all(customerId, excludeVmid ?? -1).reduce((total, r) => {
     const s = JSON.parse(r.spec ?? '{}'); return total + (s.offering?.storageClassId === cls.id ? s.diskGb ?? 0 : 0);
   }, 0);
@@ -105,7 +106,7 @@ export async function selectPlacement({ offering, template, sourceConfig, pool, 
     }
     const { used: observed, unknown } = allocations.get(candidate.node), used = { ...observed };
     if (unknown) errors.push('Existing guest reservations cannot be read.');
-    const pending = holds.filter((h) => h.node === candidate.node && (!guests.has(h.vmid) || guests.get(h.vmid).node !== h.node));
+    const pending = [...new Set(holds.filter(h=>h.node===candidate.node && (!guests.has(h.vmid)||guests.get(h.vmid).node!==h.node)).map(h=>h.vmid))].map(vmid=>({cores:Math.max(...holds.filter(h=>h.node===candidate.node&&h.vmid===vmid).map(h=>h.cores)),memory_mb:Math.max(...holds.filter(h=>h.node===candidate.node&&h.vmid===vmid).map(h=>h.memory_mb))}));
     used.memoryMb += pending.reduce((n, h) => n + h.memory_mb, 0); used.cores += pending.reduce((n, h) => n + h.cores, 0);
     if (node?.memoryBytes != null && used.memoryMb + offering.memoryMb + catalog.reserves.memoryMb > node.memoryBytes / 2 ** 20) errors.push('Allocated memory leaves insufficient reservation capacity.');
     // Start conservatively at one allocated vCPU per logical host CPU.

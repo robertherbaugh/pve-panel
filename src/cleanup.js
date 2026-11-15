@@ -1,7 +1,8 @@
+import { assertNoHa } from './compute-ha.js';
 import { verifyComputeDeleted } from './compute-placement.js';
 // Destroying servers and deleting customers completely (admin actions).
 
-import { assertComputeIdle, releaseCompute } from './compute-state.js';
+import { assertComputeIdle, releaseCompute, computeManaged } from './compute-state.js';
 import { hasSharedResources } from './tenancy.js';
 import { db, audit } from './db.js';
 import { config } from './config.js';
@@ -29,6 +30,7 @@ export function isProtected(vmid, guest) {
  */
 export async function destroyServer(actor, vmid) {
   assertComputeIdle(vmid);
+  if (computeManaged(vmid)) await assertNoHa(vmid);
   actor={account:actor.account,ip:actor.ip,customerId:actor.customerId??db.prepare('SELECT customer_id FROM vms WHERE vmid=?').get(vmid)?.customer_id};
   const guest = (await clusterGuests(true)).get(vmid);
   if (isProtected(vmid, guest)) throw new CleanupError(403, `Server ${vmid} is protected and can't be deleted here`);

@@ -1,3 +1,4 @@
+import { assertNoHa } from './compute-ha.js';
 import { backupServiceSelected, requireBackupService, backupUsage, backupReservation, reserveCatalogBackup, retainBackup, trackedBackup, releaseBackupVolume } from './compute-backups.js';
 import { runCatalogRestore } from './compute-restore.js';
 import { selectPlacement } from './compute-placement.js';
@@ -260,6 +261,7 @@ async function prepareCatalogRestore(req,row,guest,{volid,backupFirst=true,start
   busyCheck(row.vmid);
   if (activeWindowsUpdate(row.vmid)) throw new BackupError(409,'Wait for Windows updates to finish');
   await requireVisible(row,guest,volid);
+  await assertNoHa(row.vmid);
   const allocation=allocationFor(row.vmid),offering=allocation.offering;
   if (offering.haEnabled) throw new BackupError(409,'Disable HA before restoring this VM');
   const [cfg,backup]=await Promise.all([pve.get(`${guestPath(guest)}/config`),pve.get(`/nodes/${encodeURIComponent(guest.node)}/vzdump/extractconfig`,{volume:volid}).then(parseConfig)]);
