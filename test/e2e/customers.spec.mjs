@@ -43,7 +43,7 @@ test('customer editor, memberships and VM assignment support shared customers an
   await page.setViewportSize({ width: 1440, height: 1100 });
   await context.addCookies(cookies(admin));
   await page.goto(stack.adminUrl);
-  await page.getByRole('tab', { name: 'Customers', exact: true }).click();
+  await page.getByRole('button', { name: 'Customers', exact: true }).click();
   await page.getByRole('button', { name: 'Add customer', exact: true }).click();
   const d = page.getByRole('dialog', { name: 'Add customer', exact: true });
   await d.getByLabel('Customer name', { exact: true }).fill('TacticalID Development');
@@ -84,7 +84,7 @@ test('customer editor, memberships and VM assignment support shared customers an
   await m.getByRole('button', { name: 'Close', exact: true }).click();
   if (process.env.CUSTOMERS_SCREENSHOT)
     await page.screenshot({ path: process.env.CUSTOMERS_SCREENSHOT, fullPage: true });
-  await page.getByRole('tab', { name: 'Servers', exact: true }).click();
+  await page.getByRole('button', { name: 'Servers', exact: true }).click();
   await page.locator('tr[data-vmid="101"] [data-owner]').selectOption(String(dev.id));
   await expect
     .poll(async () => (await admin.get('/api/admin/vms')).json.find((v) => v.vmid === 101).customerId)
@@ -117,7 +117,7 @@ test('customer editor, memberships and VM assignment support shared customers an
   expect(await page.evaluate(async () => (await fetch('/api/vms/101')).status)).toBe(404);
   await expect(page.getByRole('button', { name: 'Customer members', exact: true })).toHaveCount(0);
   await page.goto(stack.adminUrl);
-  await page.getByRole('tab', { name: 'Users', exact: true }).click();
+  await page.getByRole('button', { name: 'Users', exact: true }).click();
   const user = page.locator(`[data-user="${bob.id}"]`);
   await user.getByRole('button', { name: 'Disable', exact: true }).click();
   await page.locator('#confirm-ok').click();
@@ -135,7 +135,7 @@ test('customer editor, memberships and VM assignment support shared customers an
 test('customer deletion shows resource blockers and requires explicit confirmation', async ({ page, context }) => {
   await context.addCookies(cookies(admin));
   await page.goto(stack.adminUrl);
-  await page.getByRole('tab', { name: 'Customers', exact: true }).click();
+  await page.getByRole('button', { name: 'Customers', exact: true }).click();
   const dev = (await admin.get('/api/admin/customers')).json.customers.find((c) => c.slug === 'tacticalid-dev');
   await page.locator(`[data-customer="${dev.id}"]`).getByRole('button', { name: 'Delete', exact: true }).click();
   const blocked = page.getByRole('dialog', { name: `Delete customer ${dev.name}`, exact: true });
@@ -148,8 +148,8 @@ test('customer deletion shows resource blockers and requires explicit confirmati
     name: 'Former customer', slug: 'former-customer', enabled: true, pools: [], sso: { required: false },
   })).json;
   await admin.put(`/api/admin/customers/${c.id}/members`, { userId: alice.id, role: 'viewer' });
-  await page.getByRole('tab', { name: 'Users', exact: true }).click();
-  await page.getByRole('tab', { name: 'Customers', exact: true }).click();
+  await page.getByRole('button', { name: 'Users', exact: true }).click();
+  await page.getByRole('button', { name: 'Customers', exact: true }).click();
   const row = page.locator(`[data-customer="${c.id}"]`);
   await row.getByRole('button', { name: 'Delete', exact: true }).click();
   const d = page.getByRole('dialog', { name: `Delete customer ${c.name}`, exact: true });

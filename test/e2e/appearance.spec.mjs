@@ -8,6 +8,7 @@ test('a scheme chosen in Settings → Appearance reaches the customer portal', a
   await admin.locator('#login-form [name=password]').fill('correct-horse-battery');
   await admin.locator('#login-form button[type=submit]').click();
   await admin.locator('[data-admin-tab=settings]').click();
+  await admin.getByRole('tab', { name: 'Appearance', exact: true }).click();
   await admin.locator('[data-scheme-pick="ember"]').click();
   await expect(admin.locator('html')).toHaveAttribute('data-scheme', 'ember');   // live preview
   await admin.locator('[data-scheme-save]').click();

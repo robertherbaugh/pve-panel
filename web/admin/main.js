@@ -10,6 +10,25 @@ applyBrand('Administration');
 document.querySelectorAll('[data-brand-mark]').forEach((el) => { el.innerHTML = brandMark(28); });
 
 let me = null;
+const shell = $('#app-view');
+const menuToggle = $('#admin-menu-toggle');
+const compactNavigation = window.matchMedia('(max-width: 860px)');
+
+function setNavigationOpen(open) {
+  shell.classList.toggle('nav-open', open);
+  menuToggle.setAttribute('aria-expanded', String(open));
+}
+menuToggle.addEventListener('click', () => setNavigationOpen(!shell.classList.contains('nav-open')));
+shell.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && shell.classList.contains('nav-open')) {
+    setNavigationOpen(false);
+    menuToggle.focus();
+  }
+});
+shell.addEventListener('click', (event) => {
+  if (!event.target.closest('.admin-sidebar')) setNavigationOpen(false);
+});
+compactNavigation.addEventListener('change', () => setNavigationOpen(false));
 
 function resetLogin() {
   const box = $('#login-2fa');
@@ -24,6 +43,7 @@ const signInReady = prepareSignIn($('#login-form'), {
 });
 
 async function showLogin() {
+  setNavigationOpen(false);
   $('#app-view').hidden = true;
   $('#login-view').hidden = false;
   resetLogin();
@@ -40,9 +60,15 @@ setUnauthorizedHandler(showLogin);
 
 const admin = createAdmin({
   root: $('#admin-view'),
+  navigation: $('#admin-nav'),
   api, toast, fail, confirmAction, promptText, esc,
   getMe: () => me,
   onAbout: showVersion,
+  onNavigate: () => {
+    const wasOpen = shell.classList.contains('nav-open');
+    setNavigationOpen(false);
+    if (wasOpen && compactNavigation.matches) $('#admin-page-title').focus();
+  },
 });
 
 /** Version in the top bar; a dot when a newer release is available. */

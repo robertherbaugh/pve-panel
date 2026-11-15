@@ -3,12 +3,14 @@ title: Install without Docker
 sidebar_position: 5
 ---
 
-Requires Node.js 22.13 or newer (it uses Node's built-in `node:sqlite`, so there is nothing to compile).
+Use Node.js 26.13.1 or a newer Node 26 patch release.
+Node 24.22.3 or a newer Node 24 patch release remains supported for compatibility.
+The panel uses Node's built-in `node:sqlite`, so there is nothing to compile.
 
 :::warning Keep Node.js patched
-Use the newest patch release of Node.js 22 or 24 (at least **22.23.4** or **24.22.1**,
-which fix CVE-2026-111497 in the bundled Brotli decoder and further security issues).
-The Docker image already contains a fixed version.
+Install the newest security patch for your supported Node.js release.
+The Docker image pins Node.js **26.13.1**.
+The repository's `.nvmrc` selects the same version for local development.
 :::
 
 ```bash

@@ -583,7 +583,19 @@ img.brand-logo { width: auto; max-width: 180px; object-fit: contain; }
 /* =========================================================================
    Admin interface
    ========================================================================= */
-.admin-shell { display: block; min-height: 100%; background: var(--bg); }
+.admin-shell { min-height: 100vh; }
+.admin-workspace { min-width: 0; }
+.admin-sidebar { height: 100dvh; }
+.admin-sidebar .brand { min-width: 0; }
+.admin-sidebar .brand [data-brand] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-sidebar img.brand-logo { max-width: 40px; max-height: 36px; }
+.admin-nav { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding-right: 3px; }
+.admin-nav-group + .admin-nav-group { margin-top: 22px; }
+.admin-nav .side-label { margin-bottom: 8px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+.admin-nav .nav-item { flex-shrink: 0; }
+.admin-nav .nav-item[aria-current="page"] { background: var(--side-active); color: var(--side-ink); }
+.admin-nav .nav-item[aria-current="page"] .icon { background: var(--signal); color: var(--signal-ink); }
+.admin-nav .tab-count { margin-left: auto; }
 .topbar {
   display: flex; align-items: center; gap: 12px; height: 60px;
   padding: 0 clamp(16px, 3vw, 32px);
@@ -597,6 +609,14 @@ img.brand-logo { width: auto; max-width: 180px; object-fit: contain; }
   font-size: 12.5px; font-weight: 600; color: #b8c5ff;
   padding: 3px 10px; border-radius: 999px; background: rgb(124 148 255 / 0.16);
 }
+.admin-shell .topbar { background: var(--surface); color: var(--ink); border-bottom: 1px solid var(--line); }
+.admin-shell .topbar #account-email { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-shell .topbar .btn.ghost { color: var(--ink); flex-shrink: 0; }
+.admin-shell .topbar .btn.ghost:hover { background: var(--surface-2); }
+.admin-shell .admin-badge { background: var(--tint); color: var(--tint-ink); }
+.admin-shell .version-badge { color: var(--muted); }
+.admin-shell .version-badge:hover { color: var(--ink); border-color: var(--muted); }
+.admin-shell .version-badge.has-update { color: var(--ink); border-color: var(--warn); }
 .admin { padding: 28px clamp(16px, 4vw, 48px) 56px; }
 .admin-inner { max-width: 1360px; }
 .admin h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
@@ -677,6 +697,7 @@ dialog#twofa-admin { max-width: min(540px, calc(100vw - 32px)); }
 
 /* Settings */
 .settings { display: grid; gap: 16px; max-width: 880px; }
+.settings-panel { display: grid; gap: 16px; min-width: 0; }
 .settings-card { display: grid; gap: 16px; }
 .settings-head { display: grid; gap: 6px; }
 .settings-head p { margin: 0; }
@@ -1040,6 +1061,14 @@ dialog.access-rule-modal { width: min(900px, calc(100vw - 32px)); max-width: non
   .shell { background: var(--bg); }
   .map-card { overflow-x: auto; }
   .netmap { min-width: 600px; }
+  .admin-shell .admin-sidebar { height: auto; }
+  .admin-shell .side-nav { max-height: calc(100dvh - 64px); }
+  .admin-shell .topbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; height: auto; gap: 8px; padding: 10px 18px; }
+  .admin-shell .topbar .spacer { display: none; }
+  .admin-shell .admin-badge { justify-self: start; }
+  .admin-shell .version-badge { justify-self: end; }
+  .admin-shell .topbar #account-email { grid-row: 2; grid-column: 1; }
+  .admin-shell .topbar #logout { grid-row: 2; grid-column: 2; }
 }
 
 /* =========================================================================
