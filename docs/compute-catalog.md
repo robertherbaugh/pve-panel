@@ -109,11 +109,48 @@ Profiles also define class-specific disk limits and a separate backup storage li
 A zero limit adds no cap beyond the existing aggregate customer quota.
 Catalog creation enforces size restrictions, storage classes, class limits and existing aggregate quotas.
 Catalog backups enforce service selection, Basic destinations and the shared backup quota.
-HA activation needs separate integration.
+HA availability also requires the provider’s enabled and verified native HA policy.
 
 HA activation changes capacity requirements and service commitments.
 Record the applicable SLA and MSA acceptance before activating HA for a customer VM.
 HA restarts a VM after host failure. It does not eliminate downtime or replace backups.
+
+### Native HA add-on
+
+HA starts disabled. Customers create a VM, stop it, then use **HA Enabled** in its overview to request the add-on.
+Only customer administrators with VM power permission can enable or disable it.
+The provider must publish the SLA/MSA versions and terms and check at least three eligible nodes.
+Infrastructure verification covers quorum, fencing/watchdog, CPU compatibility, redundant shared storage and guest networking.
+The customer explicitly accepts the current agreement before activation. Policy revisions retain the accepted text.
+
+Admission checks live quorum, active local resource managers, shared access to all VM volumes and placement eligibility on every selected node.
+The token needs `Sys.Audit` and `Sys.Console` on `/` for HA inventory and management, in addition to catalog privileges.
+Each HA VM conservatively reserves its entire CPU and memory allocation on every verified node.
+These holds also reduce capacity for ordinary VM placement. This deliberately trades utilization for simple failover headroom.
+The panel creates a stopped native HA resource and a strict positive node-affinity rule covering the verified nodes.
+Proxmox controls ongoing HA placement and failover. The panel does not enable cluster-wide balancing or edit existing cluster rules.
+
+Power actions update the HA requested state. Start and reboot check the panel’s affinity rule and reported rule errors.
+Resize, reinstall, restore and deletion require HA to be disabled first.
+Disabling HA requires a stopped resource, deletes the native resource and checks deletion of its affinity rule before releasing capacity.
+Unknown enrollment or removal outcomes retain reservations for provider reconciliation.
+Changes to infrastructure or agreement text require affected VMs to leave HA first.
+Providers may stop offering new HA enrollments independently.
+
+### Existing VM adoption
+
+Providers use **Compute → Adopt an existing VM** after assigning a VM to an enabled customer.
+Adoption requires the VM to be stopped and free of active tasks, native HA and unsupported host-specific settings.
+Its CPU and memory must match an enabled permitted size. Its boot disk must use a mapped storage class on its current node.
+The existing NIC must match the customer’s verified bridge, VLAN and firewall setting.
+This release accepts one data disk and one guest NIC. It rejects unused volumes and custom cloud-init data.
+Live placement, pool membership, current catalog/profile revisions and customer quota checks all apply.
+
+The provider enters the current VM name to authorize adoption. The panel records allocation history and capacity reservations atomically.
+Adoption preserves the guest’s configuration, disk, credentials and current node.
+It enables customer lifecycle operations, including destructive reinstall and deletion, under the customer’s existing permissions.
+A repeated adoption cannot create another active allocation.
+Adoption does not revoke direct Proxmox access or move an incompatible VM. Plan those transitions separately.
 
 ### Networking
 
@@ -125,7 +162,12 @@ Headscale rules alone do not isolate guests on their underlying LAN.
 Customers control application exposure from their VMs.
 They can install exposure software such as Cloudflare.
 OpenZiti or zrok integration can follow as an optional service.
-The current hosted Tailscale integration needs an extension before it can enroll guests in Headscale.
+Providers select Tailscale or Headscale under **Compute → Private access enrollment**.
+Headscale requires its HTTPS control server URL. Customers supply a pre-authentication key scoped to their customer.
+Enrollment uses the Tailscale guest client and QEMU guest agent on Linux or Windows.
+Keys pass through guest-agent stdin and a temporary restricted file. The panel does not retain them.
+Changing the provider setting affects future connections. Existing connections retain their recorded control server.
+Headscale users, key issuance and ACLs remain under the provider’s existing Headscale configuration.
 
 ### Future billing
 
@@ -139,7 +181,8 @@ Choose pricing rules for compressed or deduplicated PBS data before enabling inv
 Catalog revisions preserve offering definitions.
 Catalog creation records durable operations, encrypted temporary credentials, capacity reservations and allocation events.
 Deletion closes the allocation after the panel checks VM absence.
-Resize, storage changes, add-ons and adoption need additional allocation events.
+Creation, resize, reinstall, restore, adoption and HA changes record allocation events.
+Storage-class changes and independent volumes remain future work.
 Migration must not create a second charge for the same allocation.
 Do not activate invoicing until allocation reconciliation and pricing rules are complete.
 
@@ -163,11 +206,11 @@ Customers connect to the VM's private address with their selected username and c
 The existing guest network must provide connectivity from their private access network.
 OIDC authenticates the panel session. Guest sign-in uses the credentials selected for that VM.
 Saved keys belong to the signed-in user across their customer memberships.
-Removing a saved key affects future provisioning. It does not remove keys from existing VMs.
+Removing a saved key affects future provisioning. Existing VM keys stay in place.
 Reinstall can select new sign-in settings while preserving the catalog offering.
 Windows images continue to use their Administrator password. Containers use root with the selected credentials.
 
-The authenticated `/api/ssh-keys` endpoints list, save and remove personal public keys.
+The authenticated `/api/ssh-keys` endpoints list, save and delete personal public keys.
 Create and reinstall requests accept `sshKeyIds` and `loginMethod` values of `ssh`, `password` or `both`.
 The server resolves key IDs against the acting user's library before making Proxmox changes.
 
@@ -191,6 +234,9 @@ The panel releases the reservation after it checks archive deletion.
 Active compute allocations and retained backup reservations block customer deletion, even after VM rows disappear.
 Unknown outcomes retain their quota.
 Providers can discover a completed archive by its job marker under **Compute operations**.
+Customer administrators manage archives from deleted VMs under **Account → Retained backups**.
+Protected archives cannot be deleted. Storage must be readable before absence can release a reservation.
+If someone deleted an archive outside the panel, the same deletion action verifies its absence and releases its quota.
 An unresolved submission without a matching archive needs manual provider investigation.
 These records prepare usage accounting. They do not activate prices or invoices.
 
@@ -200,10 +246,10 @@ These records prepare usage accounting. They do not activate prices or invoices.
 2. Check datastore media, node permissions, template disks, network isolation and connectivity in the target cluster.
 3. Enable catalog provisioning for selected customers after the infrastructure checks pass.
 4. Pilot direct clones and stopped clone-and-migrate placement across eligible nodes.
-5. Make resize, reinstall, restore and deletion preserve the offering and allocation history.
-6. Integrate native Proxmox HA after storage, networking, spare capacity and service acceptance pass their checks.
+5. Pilot resize, reinstall, restore and deletion, including interrupted task recovery.
+6. Pilot native Proxmox HA after storage, networking, spare capacity and service acceptance pass their checks.
 7. Pilot backup entitlements, Basic destinations, storage limits and retained usage records.
-8. Pilot with new VMs. Adopt or migrate existing VMs explicitly.
+8. Pilot with new VMs. Adopt compatible assigned VMs explicitly. Plan other migrations separately.
 
 Use native Proxmox scheduling for HA guests. Avoid a second controller that independently migrates the same VMs.
 Customers select offerings. Administrators maintain the infrastructure that can satisfy them.
@@ -212,6 +258,10 @@ Customers select offerings. Administrators maintain the infrastructure that can 
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| GET | `/api/admin/compute-adoption` | List assigned VMs without a catalog allocation. |
+| POST | `/api/admin/compute-adoption/:vmid` | Check and record an existing VM allocation. |
+| GET / PUT | `/api/admin/compute-ha-policy` | Read or publish verified HA nodes and agreements. |
+| GET / PUT | `/api/admin/remote-access` | Select Tailscale or a Headscale HTTPS control server. |
 | GET | `/api/admin/compute-catalog` | Read the catalog and revision. |
 | PUT | `/api/admin/compute-catalog` | Save sizes, mappings and reserves with the current revision. |
 | GET | `/api/admin/compute-catalog/inventory` | Read current Proxmox nodes and storage. |
@@ -226,5 +276,7 @@ Customers select offerings. Administrators maintain the infrastructure that can 
 The customer portal exposes none of these administration routes.
 Customers read offerings at `/api/compute-offerings`, allocations at `/api/compute-allocations` and backup reservations at `/api/compute-backup-usage`.
 Catalog creates use `/api/vms` with an `Idempotency-Key` header.
+Customer administrators select the backup service at `/api/compute-services` and manage orphan archives at `/api/retained-backups`.
+They read HA terms at `/api/compute-ha-policy` and change a stopped VM’s HA add-on at `/api/vms/:vmid/ha`.
 The server fixes `backupClassId` to `basic`, `billingMode` to `reservation` and catalog `rollout` to `customer-opt-in`.
 Clients cannot change these fields.
