@@ -920,6 +920,71 @@ dialog p { margin: 0 0 20px; }
 /* Refresh for dialogs and toasts (after their base rules above) */
 dialog { border-color: var(--edge); border-radius: var(--r-xl); box-shadow: var(--shadow-pop); padding: 26px; }
 dialog::backdrop { backdrop-filter: blur(4px); }
+
+/* SSO permission sets and their resource selector dialogs. */
+.access-settings { margin-bottom: 30px; }
+.access-table-head { align-items: center; gap: 16px; }
+.access-table-head h3 { margin: 0 0 6px; }
+.access-table-head p { margin: 0; }
+.access-table { min-width: 940px; }
+.access-table td { vertical-align: top; padding-top: 18px; padding-bottom: 18px; }
+.access-table td:first-child { min-width: 165px; }
+.access-table td:nth-child(2) { min-width: 190px; max-width: 280px; }
+.access-table td:nth-child(3) { min-width: 190px; max-width: 280px; }
+.access-chips, .access-claims { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.access-claims + .access-claims { margin-top: 6px; }
+.access-table .badge { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.access-block { display: block; margin-top: 5px; }
+.access-operation-summary { display: block; min-width: 150px; max-width: 220px; }
+.access-rule-disabled td { background: color-mix(in srgb, var(--muted) 4%, transparent); }
+.access-inventory-status { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 16px 0; }
+.access-inventory-status p { margin: 0; }
+.access-inventory-status button { flex-shrink: 0; }
+.access-switch { display: inline-flex; position: relative; cursor: pointer; margin: 0; }
+.access-switch input { position: absolute; opacity: 0; width: 42px; height: 24px; margin: 0; }
+.access-switch > span { width: 42px; height: 24px; border-radius: 20px; border: 1px solid var(--line); background: var(--muted); transition: background .15s; }
+.access-switch > span::after { content: ''; display: block; width: 18px; height: 18px; border-radius: 50%; background: var(--surface); margin: 2px; transition: transform .15s; }
+.access-switch input:checked + span { background: var(--signal); }
+.access-switch input:checked + span::after { transform: translateX(18px); }
+.access-switch input:focus-visible + span { outline: 2px solid var(--signal); outline-offset: 3px; }
+.access-switch input:disabled + span { opacity: .5; cursor: wait; }
+dialog.access-rule-modal { width: min(900px, calc(100vw - 32px)); max-width: none; max-height: calc(100dvh - 40px); overflow: auto; }
+.access-editor { max-width: none; }
+.access-editor > .section-head { margin-bottom: 6px; align-items: center; }
+.access-editor h2 { margin: 0; }
+.access-editor fieldset { min-width: 0; padding: 18px; margin: 0; border: 1px solid var(--line); border-radius: var(--r-lg); }
+.access-editor fieldset legend { font-weight: 650; padding: 0 7px; }
+.access-editor .grid-2 { gap: 18px; }
+.access-more-operations { margin-top: 14px; }
+.access-more-operations summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+.access-more-operations[open] summary { margin-bottom: 14px; }
+.access-editor .hint { display: block; margin: 7px 0 0; font-size: 13px; }
+.access-editor .grid-2 + .access-picker { margin-top: 16px; }
+.access-editor-actions { position: sticky; bottom: -26px; margin: 0 -6px -6px; padding: 16px 6px 6px; background: var(--surface); border-top: 1px solid var(--line); }
+.access-spacer { flex: 1; }
+.access-picker { min-width: 0; }
+.access-picker-label { display: block; font-weight: 600; margin-bottom: 7px; }
+.access-picker-trigger { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--ink); background: var(--surface); font: inherit; text-align: left; cursor: pointer; }
+.access-picker-trigger [data-picker-summary] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.access-picker-trigger[aria-expanded=true] { border-color: var(--signal); }
+.access-picker-panel { margin-top: 6px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); padding: 10px; box-shadow: var(--shadow-1); }
+.access-picker-panel > input { width: 100%; margin: 0 0 8px; }
+.access-picker-options { max-height: 220px; overflow-y: auto; }
+.access-picker-option { display: flex; align-items: flex-start; gap: 10px; margin: 0; padding: 9px 6px; border-radius: var(--r-sm); cursor: pointer; }
+.access-picker-option:hover { background: var(--surface-2); }
+.access-picker-option input { width: auto; flex-shrink: 0; margin: 4px 0 0; }
+.access-picker-option > span { min-width: 0; }
+.access-picker-option strong, .access-picker-option small { display: block; overflow-wrap: anywhere; }
+.access-picker-option strong { font-size: 14px; font-weight: 600; }
+.access-picker-option small { font-size: 12px; margin-top: 3px; font-weight: 400; }
+.access-unavailable { color: var(--warn); }
+@media (max-width: 640px) {
+  .access-table-head, .access-inventory-status { align-items: stretch; flex-direction: column; }
+  dialog.access-rule-modal { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); padding: 18px; }
+  .access-editor .grid-2 { grid-template-columns: 1fr; }
+  .access-editor fieldset { padding: 12px; }
+  .access-editor-actions { flex-wrap: wrap; bottom: -18px; }
+}
 .toast { border-radius: 12px; box-shadow: var(--shadow-pop); }
 .page > .h2, .page .h2 { margin-top: 36px; }
 .create-form fieldset { border-color: var(--edge); box-shadow: var(--shadow-1); }

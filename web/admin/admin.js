@@ -110,6 +110,7 @@ export function generatePassword(length = 16) {
 }
 
 export function createAdmin({ root, api, toast, fail, confirmAction, promptText, esc, getMe, onAbout }) {
+  let disposeAccessPolicy = null;
   const st = {
     tab: 'servers', users: [], vms: [], audit: [], filter: '', newUser: null,
     templates: [], storages: {}, vpn: null,
@@ -181,6 +182,8 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
   }
 
   function renderTab() {
+    disposeAccessPolicy?.();
+    disposeAccessPolicy = null;
     if (st.tab === 'servers') renderServers();
     if (st.tab === 'users') renderUsers();
     if (st.tab === 'templates') renderTemplates();
@@ -195,7 +198,9 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
     if (st.tab === 'about') renderAbout();
     if (st.tab === 'setup') renderSetupCheck();
     if (st.tab === 'settings') renderSettings();
-    if (st.tab === 'permissions') renderAccessPolicy(root.querySelector('#admin-body'), { data: st.accessPolicy, api, esc, toast, fail });
+    if (st.tab === 'permissions') disposeAccessPolicy = renderAccessPolicy(root.querySelector('#admin-body'), {
+      data: st.accessPolicy, api, esc, toast, fail, confirmAction, onSave: (saved) => { st.accessPolicy = saved; },
+    });
     if (st.tab !== 'settings' && st.schemePreview) { st.schemePreview = null; applyScheme(st.appearance?.scheme); }
   }
 

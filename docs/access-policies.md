@@ -23,10 +23,19 @@ Set `OIDC_GROUPS_CLAIM` / `OIDC_ENTITLEMENTS_CLAIM` for different top-level clai
 names. Only the configured issuer's signed Authorization Code + PKCE exchange
 can establish these grants; customer request bodies cannot supply claims.
 
-A policy needs an exact email domain and at least one matching group or
-entitlement. Each rule can require either list (**any**) or a match from each
-nonempty list (**all**). Within one list any named value suffices. A domain alone
-gives no access. Rule grants are additive; there are no deny rules.
+A policy needs at least one matching group or entitlement from validated SSO
+claims. The email domain filter is optional: `allowedDomains: []` applies no
+additional domain restriction. A nonempty list restricts shared access to those
+exact domains; existing filters remain in place on upgrade. This is separate
+from `OIDC_ALLOWED_DOMAINS`, which controls account creation/linking.
+Each rule can require either list (**any**) or a match from each nonempty list
+(**all**). Within one list any named value suffices. A domain alone gives no
+access. Rule grants are additive; there are no deny rules.
+
+Each permission set has an `enabled` boolean. It defaults to `true` when omitted
+for compatibility with existing policies. Disabling a set stops its grants;
+another matching set or an independent legacy ownership grant can still allow
+access. The top-level `enabled` switch controls all shared grants.
 
 A guest must belong to an exact configured **Proxmox resource pool**, have every
 required tag, and match the optional VM-ID list. Pools, tags and panel display
@@ -39,6 +48,21 @@ snapshots when changing a guest's security classification.
 Pool-scoped `Administrator` in Proxmox does not create a panel administrator.
 The panel's existing administrator flag remains separate. The policy does not
 import or continuously synchronize Proxmox ACLs.
+
+## Permissions editor
+
+**Admin → Permissions** lists permission sets in a table. Each row has an
+immediately saved enable/disable toggle and an **Edit** dialog. **Add permission
+set** uses the same dialog. Global access settings are saved separately.
+
+Resource pools and required tags are searchable multiselect dropdowns populated
+from Proxmox. Pools include comments and eligible guest counts. The optional
+specific-VM selector searches by VMID or name and shows node/pool details;
+choices follow the selected pools and required tags. An empty VM selection
+includes every eligible guest in those pools, subject to the tag constraints.
+Templates and the VPN gateway are excluded. **Refresh Proxmox resources** reloads
+choices without changing saved policies. Saved selections missing from a failed
+or changed inventory are preserved with a warning until explicitly removed.
 
 ## Authentik
 
@@ -147,6 +171,12 @@ solve filtered pool inventories by granting datacenter-wide Administrator.
 Administrators can export the full versioned document with
 `GET /api/admin/access-policy` and replace it with
 `PUT /api/admin/access-policy`. The same strict validation backs the form.
+Responses include an opaque `revision` string. Pass it unchanged in `If-Match`
+when saving to reject stale edits with HTTP 409; the browser does this
+automatically. API clients that omit this header retain replacement behavior.
+`GET /api/admin/access-policy/resources` returns administrator-only pool, tag
+and eligible guest inventories plus warnings for unreadable pool details.
+Selection data never replaces the separate live authorization checks.
 An illustrative (not production) policy is in
 [access-policy.example.json](access-policy.example.json).
 
@@ -154,7 +184,13 @@ Back up SQLite before upgrading. The migration is additive (`vms.access_managed`
 and `oidc_authorizations`). Test on a copied database, verify least-privilege
 Proxmox API access, and test two groups plus an unmapped user before enabling the
 policy. Configure offered images, real destination storage, network behavior,
-quotas and expiry deliberately. No rule is automatically enabled on upgrade.
+quotas and expiry deliberately. Upgrades preserve the top-level enabled state
+and existing domain filters. Existing rules without an `enabled` field remain
+enabled within that policy; new policies still start disabled.
+
+Earlier fork images do not honor per-set `enabled: false`. Before downgrading,
+disable the top-level policy or remove disabled rules so a downgrade cannot
+reactivate those grants. Earlier images also require a nonempty domain filter.
 
 **Disable the policy to revoke shared grants. Do not roll back to an unmodified
 upstream image while policy-created VM rows remain:** upstream ignores

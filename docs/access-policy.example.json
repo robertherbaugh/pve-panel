@@ -1,11 +1,12 @@
 {
   "version": 1,
   "enabled": false,
-  "allowedDomains": ["example.com"],
+  "allowedDomains": [],
   "rules": [
     {
       "id": "development",
       "name": "Development",
+      "enabled": true,
       "groups": ["developers"],
       "entitlements": ["development:operate"],
       "match": "any",
