@@ -148,7 +148,7 @@ export async function finishAuthentication(key, response) {
   const stored = typeof response?.id === 'string' ? db.prepare('SELECT * FROM passkeys WHERE id = ?').get(response.id) : null;
   if (!stored || stored.rp_id !== pending.rpID) throw refused();
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(stored.user_id);
-  if (!user || user.deleting) throw refused();
+  if (!user || user.deleting || user.disabled) throw refused();
   // The passkey also says whose it is; it must match the account it's stored for.
   const handle = response.response?.userHandle;
   if (handle && user.webauthn_user_id && handle !== user.webauthn_user_id) throw refused();

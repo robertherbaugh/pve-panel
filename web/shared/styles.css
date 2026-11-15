@@ -1207,3 +1207,10 @@ dialog.access-rule-modal { width: min(900px, calc(100vw - 32px)); max-width: non
 .schedule-grid :is(select, input, .btn) { height: 46px; box-sizing: border-box; }
 .file-list a.btn, .backup-list a.btn { text-decoration: none; }
 .choice-tag { font-weight: 600; margin-left: 4px; vertical-align: 1px; }
+
+/* Active organization context */
+.customer-context { display:grid;gap:.4rem;padding:.75rem 1rem;font-size:.8rem;font-weight:600; }
+.customer-context select { width:100%;min-width:0; }
+.customer-context .muted { font-weight:400;text-transform:capitalize; }
+.customer-context select { background:var(--side);color:var(--side-ink);border-color:var(--side-muted); }
+.customer-context .muted { color:var(--side-muted); }

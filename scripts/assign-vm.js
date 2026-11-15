@@ -1,5 +1,6 @@
 // Usage: npm run vm:assign -- <vmid> <email> ["Display name"]
 import { db } from '../src/db.js';
+import { personalCustomer } from '../src/tenancy.js';
 import { locateGuest } from '../src/pve.js';
 
 const [vmidArg, email, label] = process.argv.slice(2);
@@ -16,10 +17,12 @@ if (!user) {
   process.exit(1);
 }
 
+const customer=personalCustomer(user.id);
+if(!customer?.enabled) throw new Error('Use the administration portal to assign this VM to an enabled customer');
 const guest = await locateGuest(vmid); // also confirms the guest exists
 db.prepare(`
-  INSERT INTO vms (vmid, user_id, type, label) VALUES (?, ?, ?, ?)
-  ON CONFLICT(vmid) DO UPDATE SET user_id = excluded.user_id, type = excluded.type, label = excluded.label
-`).run(vmid, user.id, guest.type, label ?? null);
+  INSERT INTO vms (vmid, user_id, type, label, customer_id) VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(vmid) DO UPDATE SET customer_id=excluded.customer_id, type = excluded.type, label = excluded.label
+`).run(vmid, user.id, guest.type, label ?? null,customer.id);
 
 console.log(`Assigned ${guest.type} ${vmid} (${guest.name}, node ${guest.node}) to ${email}`);

@@ -159,7 +159,7 @@ export function resolveAccount(claims, { adminOnly }) {
       // No usable password: this account signs in through the provider.
       const unusable = bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), 12);
       const { lastInsertRowid } = db.prepare(
-        'INSERT INTO users (email, password_hash, is_admin, oidc_issuer, oidc_subject) VALUES (?, ?, 0, ?, ?)',
+        'INSERT INTO users (email, password_hash, is_admin, oidc_issuer, oidc_subject, tenant_initialized) VALUES (?, ?, 0, ?, ?, 1)',
       ).run(email, unusable, claims.iss, claims.sub);
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(lastInsertRowid));
       created = true;
@@ -169,7 +169,7 @@ export function resolveAccount(claims, { adminOnly }) {
     user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
   }
 
-  if (user.deleting) throw new SsoError('not_found');
+  if (user.deleting || user.disabled) throw new SsoError('not_found');
   if (adminOnly && !user.is_admin) throw new SsoError('not_admin');
   return { user, linked, created };
 }

@@ -5,6 +5,7 @@
   "rules": [
     {
       "id": "development",
+      "customerId": 1,
       "name": "Development",
       "enabled": true,
       "groups": ["developers"],

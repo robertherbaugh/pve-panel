@@ -127,32 +127,6 @@
       </div>
     </form>
   </dialog>
-  <dialog id="delete-user">
-    <form method="dialog" id="delete-user-form" class="limits-form">
-      <h2 id="du-title" class="h2"></h2>
-      <div id="du-plan"></div>
-      <label class="check" id="du-keep-wrap">
-        <input type="checkbox" name="keepAssigned">
-        <span>Keep the servers you assigned
-          <span class="muted">They are only unassigned and keep running. Servers the customer created are always deleted.</span>
-        </span>
-      </label>
-      <label class="check" id="du-keepnet-wrap">
-        <input type="checkbox" name="keepNetwork">
-        <span>Keep the private network
-          <span class="muted">The VNet stays in Proxmox for the servers listed above. You can remove it later in
-            Proxmox (Datacenter, SDN) once nothing uses it.</span>
-        </span>
-      </label>
-      <label>Type the customer's email to confirm
-        <input name="confirm" autocomplete="off" spellcheck="false">
-      </label>
-      <div class="row end">
-        <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
-        <button value="ok" id="du-ok" class="btn danger" disabled>Delete customer</button>
-      </div>
-    </form>
-  </dialog>
   <dialog id="twofa-admin">
     <form method="dialog" id="twofa-admin-form" class="limits-form">
       <h2 id="ta-title" class="h2"></h2>

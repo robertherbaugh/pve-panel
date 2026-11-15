@@ -8,6 +8,8 @@ import {
 import {
   limitsOf, usageOf, offeredTemplates, createServer, deleteServer, reinstallServer, resizeServer,
 } from '../provision.js';
+import { requireCustomer, customerContext } from '../tenancy.js';
+import { customerUsage } from '../provision.js';
 import { networkOf } from '../network.js';
 import { vpnInfoFor } from '../vpn.js';
 import { tailscaleStatus, connectTailscale, disconnectTailscale } from '../tailscale.js';
@@ -20,9 +22,9 @@ import {
 } from '../backups.js';
 
 const insertTask = db.prepare(
-  'INSERT INTO tasks (upid, user_id, vmid, node, action) VALUES (?, ?, ?, ?, ?)'
+  'INSERT INTO tasks (upid, user_id, vmid, node, action, customer_id) VALUES (?, ?, ?, ?, ?, ?)'
 );
-const findTask = db.prepare('SELECT * FROM tasks WHERE upid = ? AND user_id = ?');
+const findTask = db.prepare('SELECT * FROM tasks WHERE upid = ? AND user_id = ? AND customer_id = ?');
 
 const POWER_ACTIONS = {
   qemu: ['start', 'shutdown', 'reboot', 'stop'],
@@ -59,7 +61,7 @@ async function accessibleGuest(req) {
 
 function recordTask(req, guest, upid, action) {
   const isTask = typeof upid === 'string' && upid.startsWith('UPID:');
-  if (isTask) insertTask.run(upid, req.account.id, guest.vmid, guest.node, action);
+  if (isTask) insertTask.run(upid, req.account.id, guest.vmid, guest.node, action, requireCustomer(req).id);
   audit(req, guest.vmid, action);
   invalidateGuestCache();
   // Only real Proxmox task IDs go back to the browser (it polls them).
@@ -142,7 +144,7 @@ export default async function vmRoutes(app) {
   app.addHook('preHandler', async (req) => {
     if (req.params.vmid === undefined) return;
     req.accessRow = await authorizedRow(req, Number(req.params.vmid), routeAction(req));
-    if (req.accessRow.access_managed && req.accessRow.user_id === req.account.id && routeAction(req) === 'resize') {
+    if (req.accessRow.access_managed && routeAction(req) === 'resize') {
       const spec = JSON.parse(req.accessRow.spec ?? '{}');
       req.account = withLimits(req.account, cloneRule(req, spec.accessRuleId));
     }
@@ -162,8 +164,8 @@ export default async function vmRoutes(app) {
     return Promise.all(rows.map(async (row) => {
       const permissions = await capabilities(req, row, guests.get(row.vmid));
       return { ...summarize(row, guests.get(row.vmid)), permissions,
-        deletable: row.user_id === req.account.id && !!row.created_by_customer && permissions.includes('delete'),
-        reinstallable: row.user_id === req.account.id && !!row.created_by_customer && permissions.includes('reinstall') };
+        deletable: !!row.created_by_customer && permissions.includes('delete'),
+        reinstallable: !!row.created_by_customer && permissions.includes('reinstall') };
     }));
   });
 
@@ -173,18 +175,20 @@ export default async function vmRoutes(app) {
     const grants = cloneRules(req);
     const a = req.account.can_create ? req.account : grants.length ? withLimits(req.account, grants[0]) : req.account;
     const authorization = authorizationStatus(req);
-    const network = networkOf(a.id);
-    const vpn = vpnInfoFor(a.id);
+    const customer = customerContext(req);
+    const context = customer ? { id:customer.id, name:customer.name, role:customer.role, limits:customer.limits, usage:await customerUsage(customer) } : null;
+    const network = customer ? networkOf(a.id,customer.id) : null;
+    const vpn = customer ? vpnInfoFor(a.id,customer.id) : {enabled:false};
     const tailscale = config.tailscale.enabled;
     // Version number only; commit, build date and update status stay admin-only.
     const panelVersion = config.showVersionToCustomers ? versionInfo.version : null;
-    const backups = backupsAvailableFor(a.id);
-    if (!a.can_create) return { canCreate: false, network, vpn, tailscale, panelVersion, backups, authorization, cloneDestinations: [] };
+    const backups = backupsAvailableFor(a.id,customer?.id);
+    if (!a.can_create) return { customer:context, canCreate: false, network, vpn, tailscale, panelVersion, backups, authorization, cloneDestinations: [] };
     return {
-      canCreate: true,
+      customer:context, canCreate: true,
       personalCreation: !!req.account.can_create,
       limits: limitsOf(a),
-      usage: await usageOf(a.id),
+      usage: await usageOf(a.id,customer?.id),
       network,
       networksEnabled: config.network.enabled,
       vpn,
@@ -472,8 +476,8 @@ export default async function vmRoutes(app) {
       permissions,
       resizeLimits: row.access_managed && permissions.includes('resize')
         ? cloneRules(req).find((r) => r.id === JSON.parse(row.spec ?? '{}').accessRuleId)?.clone.limits ?? null : null,
-      deletable: row.user_id === req.account.id && !!row.created_by_customer && permissions.includes('delete'),
-      reinstallable: row.user_id === req.account.id && !!row.created_by_customer && permissions.includes('reinstall'),
+      deletable: !!row.created_by_customer && permissions.includes('delete'),
+      reinstallable: !!row.created_by_customer && permissions.includes('reinstall'),
       os: cfg.ostype ?? null,          // raw Proxmox ostype, e.g. "win11", "l26"
       osFamily: osOf(row, cfg.ostype),  // 'windows' | 'linux' | null
       // for the reinstall form: current image and disk size
@@ -485,7 +489,7 @@ export default async function vmRoutes(app) {
       ipconfig: cfg.ipconfig0 ?? cfg.net0 ?? null,
       ips,
       pendingSize,
-      resizable: row.user_id === req.account.id && !!row.created_by_customer && permissions.includes('resize'),
+      resizable: !!row.created_by_customer && permissions.includes('resize'),
       netin: status.netin ?? 0,
       netout: status.netout ?? 0,
     };
@@ -601,7 +605,7 @@ export default async function vmRoutes(app) {
 
   // Task progress — only for tasks this user started through the panel
   app.get('/api/tasks/:upid', async (req) => {
-    const task = findTask.get(req.params.upid, req.account.id);
+    const task = findTask.get(req.params.upid, req.account.id, requireCustomer(req).id);
     if (!task) throw notFound();
     await authorizedRow(req, task.vmid, 'view');
     const status = await pve.get(

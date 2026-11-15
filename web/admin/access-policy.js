@@ -24,7 +24,7 @@ export function renderAccessPolicy(container, { data, api, esc, toast, fail, con
       <p class="muted">Map SSO groups and application entitlements to servers and operations. Each permission set controls its own resources.</p>
       <form id="access-settings-form" class="settings">
         <label class="check"><input type="checkbox" name="enabled" ${policy.enabled ? 'checked' : ''}>Enable group and entitlement access</label>
-        <label>Email domain filter (optional)<input name="domains" value="${esc(policy.allowedDomains.join(', '))}" placeholder="rcadea.cloud"><span class="hint">Leave empty to use SSO groups and entitlements without a domain restriction. To limit access further, enter exact domains separated by commas.</span></label>
+        <p class="hint">Customer membership, resource boundaries and optional email domains are configured in Customers.</p>
         <div class="row"><button class="btn primary" type="submit">Save access settings</button><span data-access-status class="muted small"></span></div>
       </form>
     </section>
@@ -43,7 +43,7 @@ export function renderAccessPolicy(container, { data, api, esc, toast, fail, con
     container.querySelector('[data-access-status]').textContent = policy.enabled ? 'SSO access enabled' : 'SSO access disabled';
     rows.innerHTML = policy.rules.length ? policy.rules.map((r, i) => `
       <tr data-access-rule="${esc(r.id)}" class="${r.enabled === false ? 'access-rule-disabled' : ''}">
-        <td><strong>${esc(r.name)}</strong><span class="muted small mono access-block">${esc(r.id)}</span></td>
+        <td><strong>${esc(r.name)}</strong><span class="muted small access-block">${esc(data.customers.find(c=>c.id===r.customerId)?.name??'Unknown customer')}</span><span class="muted small mono access-block">${esc(r.id)}</span></td>
         <td>${r.groups.length ? `<div class="access-claims"><span class="muted small">Groups</span>${chips(r.groups)}</div>` : ''}${r.groups.length && r.entitlements.length ? `<span class="muted small">${r.match === 'all' ? 'AND' : 'OR'}</span>` : ''}${r.entitlements.length ? `<div class="access-claims"><span class="muted small">Entitlements</span>${chips(r.entitlements)}</div>` : ''}</td>
         <td><div class="access-chips">${chips(r.pools)}</div>${r.tags?.length ? `<span class="muted small access-block">All tags: ${esc(r.tags.join(', '))}</span>` : ''}<span class="muted small access-block">${r.vmids?.length ? `${r.vmids.length} selected VM${r.vmids.length === 1 ? '' : 's'}` : 'All eligible VMs in these pools'}</span></td>
         <td><span class="access-operation-summary">${esc(r.actions.slice(0, 3).map((a) => labels[a] ?? a).join(', '))}</span>${r.actions.length > 3 ? `<span class="muted small access-block" title="${esc(r.actions.slice(3).map((a) => labels[a] ?? a).join(', '))}">+${r.actions.length - 3} more</span>` : ''}</td>
@@ -89,6 +89,7 @@ export function renderAccessPolicy(container, { data, api, esc, toast, fail, con
     dialog.innerHTML = `<form class="settings access-editor">
       <div class="section-head"><h2 id="access-editor-title">${index === null ? 'Add' : 'Edit'} permission set</h2><button type="button" class="btn" data-close-editor aria-label="Close permission editor">Close</button></div>
       <div class="grid-2">${field('name', 'Display name', r.name, '', 'required maxlength="100"')}${field('id', 'Rule ID', r.id, 'A stable identifier using lowercase letters, numbers and hyphens.', `required maxlength="64" ${index !== null ? 'readonly' : ''}`)}</div>
+      <label>Customer<select data-field="customerId" required><option value="">Select a customer</option>${data.customers.map(c=>`<option value="${c.id}" ${c.id===r.customerId?'selected':''}>${esc(c.name)}${c.enabled?'':' (disabled)'}</option>`).join('')}</select><span class="hint">This permission set applies only while the user is a member of this customer.</span></label>
       <label class="check"><input type="checkbox" data-field="enabled" ${r.enabled !== false ? 'checked' : ''}>Enable this permission set</label>
       <fieldset><legend>SSO matching</legend><div class="grid-2">${field('groups', 'OIDC groups', r.groups.join(', '), 'Exact group names, separated by commas.')}${field('entitlements', 'Application entitlements', r.entitlements.join(', '), 'Exact entitlement names for this application, separated by commas.')}</div>
         <label>Identity matching<select data-field="match"><option value="any" ${r.match !== 'all' ? 'selected' : ''}>Group OR entitlement</option><option value="all" ${r.match === 'all' ? 'selected' : ''}>Group AND entitlement</option></select></label></fieldset>
@@ -105,7 +106,7 @@ export function renderAccessPolicy(container, { data, api, esc, toast, fail, con
     container.append(dialog);
     const form = dialog.querySelector('form');
     const value = (name) => form.querySelector(`[data-field="${name}"]`).value.trim();
-    const poolChoices = () => resources.pools.map((p) => ({ value: p.id, label: p.id, detail: [p.comment, p.available ? `${p.vmCount} eligible VM${p.vmCount === 1 ? '' : 's'}` : 'Pool inventory unavailable'].filter(Boolean).join(' · '), unavailable: !p.available }));
+    const poolChoices = () => resources.pools.filter(p=>data.customers.find(c=>c.id===Number(value('customerId')))?.pools.includes(p.id)).map((p) => ({ value: p.id, label: p.id, detail: [p.comment, p.available ? `${p.vmCount} eligible VM${p.vmCount === 1 ? '' : 's'}` : 'Pool inventory unavailable'].filter(Boolean).join(' · '), unavailable: !p.available }));
     const tagChoices = () => resources.tags.map((t) => ({ value: t.name, label: t.name, detail: `${t.vmCount} VM${t.vmCount === 1 ? '' : 's'}` }));
     const pickers = {};
     function vmChoices() {
@@ -128,6 +129,7 @@ export function renderAccessPolicy(container, { data, api, esc, toast, fail, con
     pickers.tags = resourcePicker(form.querySelector('[data-picker=tags]'), { label: 'Required VM tags', selected: r.tags, choices: tagChoices(), esc, onChange: refreshDependent });
     pickers.vmids = resourcePicker(form.querySelector('[data-picker=vmids]'), { label: 'Specific VMs', selected: r.vmids, choices: vmChoices(), esc });
     refreshDependent();
+    form.querySelector('[data-field=customerId]').onchange=()=>{pickers.pools.update(poolChoices());refreshDependent();};
     editor = { dialog, refresh() { pickers.pools.update(poolChoices()); pickers.tags.update(tagChoices()); refreshDependent(); } };
     dialog.addEventListener('close', () => { Object.values(pickers).forEach((p) => p.destroy()); dialog.remove(); if (editor?.dialog === dialog) editor = null; }, { once: true });
     dialog.addEventListener('cancel', (e) => { if (busy) e.preventDefault(); });
@@ -137,7 +139,7 @@ export function renderAccessPolicy(container, { data, api, esc, toast, fail, con
     form.addEventListener('submit', async (e) => {
       e.preventDefault(); const target = form.querySelector('[data-editor-error]'); target.textContent = '';
       const actions = [...form.querySelectorAll('[data-action]:checked')].map((x) => x.dataset.action);
-      const nextRule = { id: value('id'), name: value('name'), enabled: form.querySelector('[data-field=enabled]').checked, groups: list(value('groups')), entitlements: list(value('entitlements')), match: value('match'), pools: pickers.pools.values(), tags: pickers.tags.values(), vmids: pickers.vmids.values().map(Number), actions,
+      const nextRule = { customerId:Number(value('customerId')), id: value('id'), name: value('name'), enabled: form.querySelector('[data-field=enabled]').checked, groups: list(value('groups')), entitlements: list(value('entitlements')), match: value('match'), pools: pickers.pools.values(), tags: pickers.tags.values(), vmids: pickers.vmids.values().map(Number), actions,
         ...(actions.includes('clone') ? { clone: { pool: value('clonePool'), templates: list(value('templates')).map((t) => /^\d+$/.test(t) ? Number(t) : t), storages: list(value('storages')), limits: Object.fromEntries(['servers', 'cores', 'memoryMb', 'diskGb'].map((k) => [k, Number(value(k))])) } } : {}) };
       if (!nextRule.pools.length) { target.textContent = 'Select at least one resource pool.'; return; }
       const next = structuredClone(policy); if (index === null) next.rules.push(nextRule); else next.rules[index] = nextRule;
@@ -152,7 +154,7 @@ export function renderAccessPolicy(container, { data, api, esc, toast, fail, con
     });
     dialog.showModal(); form.querySelector('[data-field=name]').focus();
   }
-  settings.addEventListener('submit', async (e) => { e.preventDefault(); try { await persist({ ...policy, enabled: settings.elements.namedItem('enabled').checked, allowedDomains: list(settings.elements.namedItem('domains').value) }); } catch (err) { report(err); } });
+  settings.addEventListener('submit', async (e) => { e.preventDefault(); try { await persist({ ...policy, enabled: settings.elements.namedItem('enabled').checked, allowedDomains: [] }); } catch (err) { report(err); } });
   container.querySelector('[data-add-rule]').onclick = () => openEditor();
   container.querySelector('[data-refresh-resources]').onclick = refreshResources;
   rows.addEventListener('click', (e) => { const button = e.target.closest('[data-edit-rule]'); if (button && !busy) openEditor(Number(button.dataset.editRule)); });

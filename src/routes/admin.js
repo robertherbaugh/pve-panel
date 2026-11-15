@@ -5,7 +5,7 @@ import { pve, clusterGuests, locateGuest, locateTemplate, invalidateGuestCache, 
 import { startCustomerDeletion, deletionPlan, destroyServer, isProtected } from '../cleanup.js';
 import { tailscaleOverview } from '../tailscale.js';
 import { SCHEMES, currentScheme, setScheme } from '../appearance.js';
-import { updatesEnabled, setUpdatesEnabled } from '../winupdate.js';
+import { updatesEnabled, setUpdatesEnabled, activeRun } from '../winupdate.js';
 import * as totp from '../totp.js';
 import { deleteAllPasskeys } from '../passkeys.js';
 import {
@@ -27,9 +27,17 @@ import { adminOverview, removeDevice, syncGateway } from '../vpn.js';
 import { config } from '../config.js';
 import { accessPolicy, saveAccessPolicy, ACTIONS } from '../access.js';
 import { accessInventory } from '../access-inventory.js';
+import { hasSharedResources, allCustomers,customerById,personalCustomer } from '../tenancy.js';
 
 const policyRevision = (policy) => `"${createHash('sha256').update(JSON.stringify(policy)).digest('hex')}"`;
-const policyResponse = (policy) => ({ policy, actions: ACTIONS, revision: policyRevision(policy) });
+const policyResponse = (policy) => ({ policy, actions: ACTIONS, revision: policyRevision(policy), customers: allCustomers() });
+
+
+function transferError(vmid, row) {
+  if (['creating','deleting'].includes(row?.state) || activeRun(vmid) || db.prepare("SELECT 1 FROM backup_jobs WHERE vmid=? AND state IN ('queued','running')").get(vmid)) return 'Wait until the server’s current operation finishes before changing its customer';
+  if (db.prepare('SELECT 1 FROM tailscale WHERE vmid=?').get(vmid)) return 'Disconnect Tailscale before changing this server’s customer';
+  return null;
+}
 
 const PASSWORD = { type: 'string', minLength: 12, maxLength: 200 };
 
@@ -58,7 +66,7 @@ export default async function adminRoutes(app) {
       SELECT u.id, u.email, u.is_admin AS isAdmin, u.created_at AS createdAt,
              u.can_create AS canCreate, u.max_servers AS maxServers, u.max_cores AS maxCores,
              u.max_memory_mb AS maxMemoryMb, u.max_disk_gb AS maxDiskGb,
-             u.deleting, u.deletion_error AS deletionError,
+             u.deleting, u.disabled, u.deletion_error AS deletionError,
              u.totp_enabled AS totpEnabled, u.totp_required AS totpRequired,
              u.oidc_issuer AS ssoIssuer, u.oidc_subject IS NOT NULL AS ssoLinked,
              (SELECT COUNT(*) FROM passkeys p WHERE p.user_id = u.id) AS passkeyCount,
@@ -72,6 +80,8 @@ export default async function adminRoutes(app) {
     return Promise.all(users.map(async (u) => ({
       ...u,
       isAdmin: !!u.isAdmin,
+      disabled:!!u.disabled,
+      customers:db.prepare(`SELECT c.id,c.name,m.role,m.source FROM customer_memberships m JOIN customers c ON c.id=m.customer_id WHERE m.user_id=?`).all(u.id),
       canCreate: !!u.canCreate,
       deleting: !!u.deleting,
       totpEnabled: !!u.totpEnabled,
@@ -95,6 +105,7 @@ export default async function adminRoutes(app) {
           isAdmin: { type: 'boolean' },
           requireTotp: { type: 'boolean' },
           invite: { type: 'boolean' },
+          createPersonalCustomer:{type:'boolean'},
         },
       },
     },
@@ -115,6 +126,8 @@ export default async function adminRoutes(app) {
       'INSERT INTO users (email, password_hash, is_admin, totp_required, password_set) VALUES (?, ?, ?, ?, ?)',
     ).run(clean, hash, isAdmin ? 1 : 0, requireTotp ? 1 : 0, invite ? 0 : 1);
     const id = Number(lastInsertRowid);
+    if(req.body.createPersonalCustomer===false) db.prepare('UPDATE users SET tenant_initialized=1 WHERE id=?').run(id);
+    else personalCustomer(id);
     audit(req, null, 'admin_user_create', { email: clean, isAdmin, requireTotp, invite });
 
     let inviteError = null;
@@ -223,6 +236,8 @@ export default async function adminRoutes(app) {
     }
     if ('maxBackups' in req.body) {
       db.prepare('UPDATE users SET max_backups = ? WHERE id = ?').run(req.body.maxBackups, id);
+      const personal=personalCustomer(id);
+      if(personal) db.prepare('UPDATE customers SET max_backups=?,revision=revision+1 WHERE id=?').run(req.body.maxBackups,personal.id);
       audit(req, null, 'admin_backup_limit', { email: user.email, maxBackups: req.body.maxBackups });
     }
     if (typeof req.body.totpRequired === 'boolean') {
@@ -240,6 +255,8 @@ export default async function adminRoutes(app) {
         (req.body.expirySelfExtend ?? !!user.expiry_self_extend) ? 1 : 0,
         id,
       );
+      const personal=personalCustomer(id);
+      if(personal) db.prepare('UPDATE customers SET expiry_mode=(SELECT expiry_mode FROM users WHERE id=?),expiry_days=(SELECT expiry_days FROM users WHERE id=?),expiry_date=(SELECT expiry_date FROM users WHERE id=?),expiry_self_extend=(SELECT expiry_self_extend FROM users WHERE id=?),revision=revision+1 WHERE id=?').run(id,id,id,id,personal.id);
       applyCustomerRule(id);
       audit(req, null, 'admin_expiry_rule', { email: user.email, mode: mode ?? 'none', days: req.body.expiryDays, date: req.body.expiryDate });
     }
@@ -286,6 +303,7 @@ export default async function adminRoutes(app) {
   app.delete('/api/admin/users/:id', async (req, reply) => {
     const id = Number(req.params.id);
     if (id === req.account.id) return badRequest(reply, "You can't delete your own account");
+    if(hasSharedResources(id)) return reply.code(409).send({error:'This user belongs to shared customers. Disable the user to retain customer resources.'});
     startCustomerDeletion(req, id, {
       keepAssigned: req.query.keepAssigned === 'true',
       keepNetwork: req.query.keepNetwork === 'true',
@@ -298,7 +316,7 @@ export default async function adminRoutes(app) {
   // Every guest in the cluster, with its current owner (if any)
   app.get('/api/admin/vms', async () => {
     const owners = new Map(
-      db.prepare(`SELECT v.*, u.email FROM vms v JOIN users u ON u.id = v.user_id`)
+      db.prepare(`SELECT v.*, u.email,c.name AS customer_name FROM vms v JOIN users u ON u.id = v.user_id LEFT JOIN customers c ON c.id=v.customer_id`)
         .all().map((r) => [r.vmid, r])
     );
     const expSettings = expirySettings();
@@ -309,7 +327,7 @@ export default async function adminRoutes(app) {
         const o = owners.get(Number(g.vmid));
         return {
           vmid: Number(g.vmid), name: g.name ?? '', node: g.node, type: g.type, status: g.status,
-          userId: o?.user_id ?? null, owner: o?.email ?? null, label: o?.label ?? null,
+          userId: o?.user_id ?? null, customerId:o?.customer_id??null,customerName:o?.customer_name??null, owner: o?.email ?? null, label: o?.label ?? null,
           state: o?.state ?? null, createdByCustomer: !!o?.created_by_customer,
           expiry: o ? expiryInfo(o, expSettings) : null, expiryManual: !!o?.expiry_manual,
         };
@@ -318,7 +336,7 @@ export default async function adminRoutes(app) {
     for (const [vmid, o] of owners) {
       if (!guests.has(vmid)) {
         list.push({ vmid, name: '', node: null, type: null, status: 'missing',
-          userId: o.user_id, owner: o.email, label: o.label,
+          userId: o.user_id,customerId:o.customer_id,customerName:o.customer_name, owner: o.email, label: o.label,
           state: o.state, createdByCustomer: !!o.created_by_customer,
           expiry: expiryInfo(o, expSettings), expiryManual: !!o.expiry_manual });
       }
@@ -330,30 +348,43 @@ export default async function adminRoutes(app) {
     schema: {
       body: {
         type: 'object',
-        required: ['userId'],
-        properties: { userId: { type: 'integer' }, label: { type: 'string', maxLength: 80 } },
+        anyOf:[{required:['customerId']},{required:['userId']}],
+        additionalProperties:false,
+        properties: { customerId:{type:'integer',minimum:1},userId: { type: 'integer',minimum:1 }, label: { type: 'string', maxLength: 80 } },
       },
     },
   }, async (req, reply) => {
     const vmid = Number(req.params.vmid);
-    const user = db.prepare('SELECT id, email FROM users WHERE id = ?').get(req.body.userId);
-    if (!user) return badRequest(reply, 'That customer no longer exists');
-    const guest = await locateGuest(vmid);
-    const label = req.body.label?.trim() || null;
-    const previous = db.prepare('SELECT user_id FROM vms WHERE vmid = ?').get(vmid);
-    db.prepare(`
-      INSERT INTO vms (vmid, user_id, type, label) VALUES (?, ?, ?, ?)
-      ON CONFLICT(vmid) DO UPDATE SET user_id = excluded.user_id, type = excluded.type, label = excluded.label
-    `).run(vmid, user.id, guest.type, label);
+    const requestedUser=req.body.userId?db.prepare('SELECT id,email FROM users WHERE id=? AND disabled=0').get(req.body.userId):null;
+    const customer=req.body.customerId?customerById(req.body.customerId):requestedUser?personalCustomer(requestedUser.id):null;
+    if(!customer||!customer.enabled) return badRequest(reply,'Choose an enabled customer');
+    if(req.body.customerId&&req.body.userId&&customer.legacy_user_id!==requestedUser?.id) return badRequest(reply,'Conflicting user and customer assignment');
+    const before=db.prepare('SELECT * FROM vms WHERE vmid=?').get(vmid);
+    const busy=before?.customer_id!==customer.id ? transferError(vmid,before) : null;
+    if(busy) return reply.code(409).send({error:busy});
+    const guest=await locateGuest(vmid);
+    if(customer.pools.length) {
+      const {customerHasGuest}=await import('../access.js');
+      if(!await customerHasGuest(customer,guest,null)) return badRequest(reply,'The server is outside this customer’s pool boundary');
+    }
+    const label=req.body.label?.trim()||null;
+    const previous=db.prepare('SELECT * FROM vms WHERE vmid=?').get(vmid);
+    const conflict=previous?.customer_id!==customer.id ? transferError(vmid,previous) : null;
+    if(conflict) return reply.code(409).send({error:conflict});
+    const creator=previous?.user_id??requestedUser?.id??req.account.id;
+    const user={id:creator,email:requestedUser?.email??customer.name};
+    db.prepare(`INSERT INTO vms(vmid,user_id,customer_id,type,label) VALUES(?,?,?,?,?)
+      ON CONFLICT(vmid) DO UPDATE SET customer_id=excluded.customer_id,user_id=excluded.user_id,type=excluded.type,label=excluded.label`)
+      .run(vmid,creator,customer.id,guest.type,label);
     invalidateGuestCache();
-    const renamedOnly = previous?.user_id === user.id;
+    const renamedOnly = previous?.customer_id === customer.id;
     if (!renamedOnly) {
       db.prepare(`UPDATE vms SET expires_at = NULL, expiry_set_at = NULL, expiry_manual = 0, expired_at = NULL,
                   expiry_notified = NULL, self_extended = 0 WHERE vmid = ?`).run(vmid);
-      applyCustomerRule(user.id);       // e.g. the customer's fixed end date
+      applyCustomerRule(user.id,customer.id);       // e.g. the customer's fixed end date
     }
     audit(req, vmid, renamedOnly ? 'admin_vm_rename' : 'admin_vm_assign', { email: user.email, label });
-    return { vmid, userId: user.id, owner: user.email, label, type: guest.type };
+    return { vmid, userId: user.id,customerId:customer.id,customerName:customer.name, owner: user.email, label, type: guest.type };
   });
 
   // ---- Expiry ------------------------------------------------------------------
@@ -517,8 +548,11 @@ export default async function adminRoutes(app) {
 
   app.delete('/api/admin/vms/:vmid', async (req, reply) => {
     const vmid = Number(req.params.vmid);
+    const row=db.prepare('SELECT * FROM vms WHERE vmid=?').get(vmid);
+    const conflict=transferError(vmid,row);
+    if(conflict) return reply.code(409).send({error:conflict});
     db.prepare('DELETE FROM vms WHERE vmid = ?').run(vmid);
-    audit(req, vmid, 'admin_vm_unassign');
+    audit({account:req.account,ip:req.ip,customerId:row?.customer_id}, vmid, 'admin_vm_unassign');
     return reply.code(204).send();
   });
 

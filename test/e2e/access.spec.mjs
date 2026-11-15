@@ -121,17 +121,21 @@ const cookies = (session) => [...session.cookies].map(([name, value]) => ({ name
 test('administrator edits mappings; customer chooses a destination and sees permitted operations', async ({ page, context }) => {
   const admin = await stack.adminSession();
   await admin.put('/api/admin/access-policy', { version: 1, enabled: false, allowedDomains: [], rules: [] });
+  const imported=(await admin.get('/api/admin/customers')).json.customers.find(c=>c.slug==='imported-sso');
+  const customerBody={name:imported.name,slug:imported.slug,enabled:true,pools:['tacid-dev','tacid-prod'],allowedDomains:[],sso:{groups:['developers'],entitlements:[],match:'any',required:true},limits:imported.limits,revision:imported.revision};
+  expect((await admin.put(`/api/admin/customers/${imported.id}`,customerBody)).status).toBe(200);
   await context.addCookies(cookies(admin));
   await page.goto(stack.adminUrl);
   await page.locator('[data-admin-tab=permissions]').click();
   await expect(page.getByRole('heading', { name: 'Access permissions' })).toBeVisible();
   await page.locator('[name=enabled]').check();
-  await expect(page.locator('[name=domains]')).toHaveAttribute('placeholder', 'rcadea.cloud');
+  await expect(page.locator('[name=domains]')).toHaveCount(0);
   await page.getByRole('button', { name: 'Save access settings', exact: true }).click();
   await expect(page.locator('[data-access-status]')).toHaveText('SSO access enabled');
   for (const [id, pool, cores] of [['development', 'tacid-dev', 2], ['production', 'tacid-prod', 4]]) {
     await page.locator('[data-add-rule]').click();
     const rule = page.getByRole('dialog', { name: 'Add permission set', exact: true });
+    await rule.locator('[data-field=customerId]').selectOption(String(imported.id));
     await rule.locator('[data-action=clone]').check();
     await rule.getByRole('button', { name: 'Resource pools', exact: true }).click();
     await rule.locator(`[data-picker=pools] input[value="${pool}"]`).check();

@@ -23,6 +23,7 @@ import vpnRoutes from './routes/vpn.js';
 import { syncOnStartup } from './vpn.js';
 import { reapplyIsolation, syncVnetAliases } from './network.js';
 import adminRoutes from './routes/admin.js';
+import { adminCustomerRoutes, customerContextRoutes } from './routes/customers.js';
 import { PveError } from './pve.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -134,6 +135,7 @@ async function buildServer(name, setup) {
 const customer = await buildServer('customer', async (app) => {
   await app.register(websocket, { options: { maxPayload: 16 * 1024 * 1024 } });
   await app.register(authPlugin, { scope: 'customer' });
+  await app.register(customerContextRoutes);
   await app.register(vmRoutes);
   await app.register(consoleRoutes);
   await app.register(vpnRoutes);
@@ -153,6 +155,7 @@ const customer = await buildServer('customer', async (app) => {
 // ---- Admin interface --------------------------------------------------------
 const admin = await buildServer('admin', async (app) => {
   await app.register(authPlugin, { scope: 'admin' });
+  await app.register(adminCustomerRoutes);
   await app.register(adminRoutes);
 
   await app.register(fastifyStatic, { root: web('admin') });
