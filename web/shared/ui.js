@@ -12,11 +12,11 @@ let onUnauthorized = () => {};
 /** Called when the session has expired (any 401 except from the login call). */
 export function setUnauthorizedHandler(fn) { onUnauthorized = fn; }
 
-export async function api(path, { method = 'GET', body } = {}) {
+export async function api(path, { method = 'GET', body, headers = {} } = {}) {
   const res = await fetch(path, {
     method,
     credentials: 'same-origin',
-    headers: body ? { 'Content-Type': 'application/json' } : {},
+    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
     body: body ? JSON.stringify(body) : undefined,
   });
   // Sign-in steps answer 401 for wrong input (password, 2FA code); only other

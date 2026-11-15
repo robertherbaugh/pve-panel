@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { createHash } from 'node:crypto';
 import { db, audit } from '../db.js';
 import { pve, clusterGuests, locateGuest, locateTemplate, invalidateGuestCache, guestPath } from '../pve.js';
 import { startCustomerDeletion, deletionPlan, destroyServer, isProtected } from '../cleanup.js';
@@ -25,6 +26,10 @@ import { networkOf, allNetworks } from '../network.js';
 import { adminOverview, removeDevice, syncGateway } from '../vpn.js';
 import { config } from '../config.js';
 import { accessPolicy, saveAccessPolicy, ACTIONS } from '../access.js';
+import { accessInventory } from '../access-inventory.js';
+
+const policyRevision = (policy) => `"${createHash('sha256').update(JSON.stringify(policy)).digest('hex')}"`;
+const policyResponse = (policy) => ({ policy, actions: ACTIONS, revision: policyRevision(policy) });
 
 const PASSWORD = { type: 'string', minLength: 12, maxLength: 200 };
 
@@ -34,11 +39,16 @@ function badRequest(reply, error) {
 
 export default async function adminRoutes(app) {
   app.addHook('preHandler', app.requireAdmin);
-  app.get('/api/admin/access-policy', async () => ({ policy: accessPolicy(), actions: ACTIONS }));
-  app.put('/api/admin/access-policy', async (req) => {
+  app.get('/api/admin/access-policy', async () => policyResponse(accessPolicy()));
+  app.get('/api/admin/access-policy/resources', accessInventory);
+  app.put('/api/admin/access-policy', async (req, reply) => {
+    if (req.headers['if-match'] && req.headers['if-match'] !== policyRevision(accessPolicy())) {
+      return reply.code(409).send({ error: 'Permissions changed in another session. Reload this page before saving.' });
+    }
     const policy = saveAccessPolicy(req.body);
-    audit(req, null, 'admin_access_policy', { enabled: policy.enabled, rules: policy.rules.map((r) => r.id) });
-    return { policy, actions: ACTIONS };
+    audit(req, null, 'admin_access_policy', { enabled: policy.enabled, rules: policy.rules.map((r) => r.id),
+      disabledRules: policy.rules.filter((r) => r.enabled === false).map((r) => r.id) });
+    return policyResponse(policy);
   });
 
   // ---- Users ------------------------------------------------------------

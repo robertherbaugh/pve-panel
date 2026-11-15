@@ -72,6 +72,7 @@ export async function startMockPve({ port = 0 } = {}) {
     return out;
   };
   const cluster = { firewall: { enable: 1 } };
+  const poolFailures = new Set();
   // ---- Simulated backup storage ("pbs" = Proxmox Backup Server, "local" = directory) ----
   // backups: volid -> { volid, storage, vmid, ctime, size, notes, protected, cfg, fwRules, fwOptions }
   const backups = new Map();
@@ -182,8 +183,11 @@ export async function startMockPve({ port = 0 } = {}) {
     // like Proxmox: the pool of a guest is only shown with Pool.Audit on that pool
     if (p === '/cluster/resources') return send(res, [...vms.values()].map(({cfg, pool, ...v}) => ({...v, tags: cfg?.tags ?? v.tags, ...(pool && 'Pool.Audit' in effective(`/pool/${pool}`) ? { pool } : {}), id:`${v.type}/${v.vmid}`, cpu:0.05, mem:v.maxmem/4, uptime: v.status==='running'?600:0})));
     if (p === '/version') return send(res, { version: '9.0.6', release: '9.0', repoid: 'mock' });
+    if (p === '/pools') return send(res, Object.keys(perms).filter((path) => path.startsWith('/pool/') && 'Pool.Audit' in effective(path))
+      .map((path) => ({ poolid: path.slice('/pool/'.length), comment: `Resources for ${path.slice('/pool/'.length)}` })));
     if (p.startsWith('/pools/')) {
       const pool = decodeURIComponent(p.slice('/pools/'.length));
+      if (poolFailures.has(pool)) return send(res, null, 500, 'Pool temporarily unavailable');
       if (!('Pool.Audit' in effective(`/pool/${pool}`))) return send(res, null, 403, 'Pool.Audit required');
       return send(res, { poolid: pool, members: [...vms.values()].filter((v) => v.pool === pool).map(({vmid,type}) => ({vmid,type})) });
     }
@@ -442,7 +446,7 @@ export async function startMockPve({ port = 0 } = {}) {
   return {
     url: `http://127.0.0.1:${actualPort}`,
     port: actualPort,
-    vms, sdn, gwFiles, destroyed, perms, cluster, storageStatus, backups, ctImages, ctCreates,
+    vms, sdn, gwFiles, destroyed, perms, cluster, poolFailures, storageStatus, backups, ctImages, ctCreates,
     /** GET a control endpoint, e.g. control('/__lose/104/1') */
     control: (p) => fetch(`http://127.0.0.1:${actualPort}/api2/json${p}`, {
       headers: { authorization: 'PVEAPIToken=panel@pve!panel=x' },

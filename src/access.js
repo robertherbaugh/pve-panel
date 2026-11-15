@@ -41,11 +41,11 @@ export function validatePolicy(input) {
     throw fail('Policy needs version 1, enabled, and at most 64 rules');
   }
   const domains = strings(input.allowedDomains, 'allowedDomains', 32).map((d) => d.toLowerCase());
-  if (input.enabled && !domains.length) throw fail('An enabled policy needs allowedDomains');
   if (domains.some((d) => !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/.test(d))) throw fail('Use exact email domains without wildcards');
   const ruleIds = new Set();
   const rules = input.rules.map((r) => {
-    keys(r, ['id', 'name', 'groups', 'entitlements', 'match', 'pools', 'tags', 'vmids', 'actions', 'clone'], 'rule');
+    keys(r, ['id', 'name', 'enabled', 'groups', 'entitlements', 'match', 'pools', 'tags', 'vmids', 'actions', 'clone'], 'rule');
+    if (r.enabled !== undefined && typeof r.enabled !== 'boolean') throw fail('Rule enabled must be a boolean');
     if (typeof r.id !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(r.id) || ruleIds.has(r.id)) throw fail('Rule IDs must be unique lowercase identifiers');
     ruleIds.add(r.id);
     if (typeof r.name !== 'string' || !r.name.trim() || r.name.length > 100) throw fail('Rule needs a name of 1–100 characters');
@@ -78,7 +78,7 @@ export function validatePolicy(input) {
       }
       clone = { pool: r.clone.pool, templates: [...new Set(templates)], storages, limits: { ...r.clone.limits } };
     } else if (r.clone !== undefined) throw fail('Clone settings require clone action');
-    return { id: r.id, name: r.name.trim(), groups, entitlements, match: r.match ?? 'any', pools: resourcePools,
+    return { id: r.id, name: r.name.trim(), enabled: r.enabled ?? true, groups, entitlements, match: r.match ?? 'any', pools: resourcePools,
       tags, vmids, actions, ...(clone ? { clone } : {}) };
   });
   if (new Set(rules.flatMap((r) => r.pools)).size > 64) throw fail('At most 64 distinct pools are supported');
@@ -132,8 +132,10 @@ export function forgetAuthorization(req) {
 export function matchingRules(req) {
   const policy = accessPolicy();
   const auth = authorizationFor(req);
-  if (!policy.enabled || !auth || !policy.allowedDomains.includes(auth.email.split('@')[1]) || auth.email.split('@').length !== 2) return [];
+  if (!policy.enabled || !auth) return [];
+  if (policy.allowedDomains.length && (auth.email.split('@').length !== 2 || !policy.allowedDomains.includes(auth.email.split('@')[1]))) return [];
   return policy.rules.filter((r) => {
+    if (r.enabled === false) return false;
     const matches = [r.groups.length ? r.groups.some((g) => auth.groups.includes(g)) : null,
       r.entitlements.length ? r.entitlements.some((e) => auth.entitlements.includes(e)) : null].filter((v) => v !== null);
     return r.match === 'all' ? matches.every(Boolean) : matches.some(Boolean);
