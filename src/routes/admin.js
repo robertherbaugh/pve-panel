@@ -354,6 +354,48 @@ export default async function adminRoutes(app) {
     return list.sort((a, b) => a.vmid - b.vmid);
   });
 
+  app.post('/api/admin/vms/assign', { schema: { body: {
+    type: 'object', additionalProperties: false, required: ['vmids', 'customerId'],
+    properties: { vmids: { type: 'array', minItems: 1, maxItems: 500, uniqueItems: true, items: { type: 'integer', minimum: 100 } }, customerId: { type: 'integer', minimum: 1 } },
+  } } }, async (req, reply) => {
+    const customer = customerById(req.body.customerId);
+    if (!customer?.enabled) return badRequest(reply, 'Choose an enabled customer');
+    const inventory = await clusterGuests(true);
+    const boundary = new Set();
+    for (const pool of customer.pools) {
+      const result = await pve.get(`/pools/${encodeURIComponent(pool)}`);
+      if (!Array.isArray(result?.members)) return reply.code(502).send({ error: 'Customer pool membership cannot be verified' });
+      for (const m of result.members) if (['qemu','lxc'].includes(m.type)) boundary.add(Number(m.vmid));
+    }
+    const selected = req.body.vmids.map(vmid => ({ vmid, guest: inventory.get(vmid), row: db.prepare('SELECT * FROM vms WHERE vmid=?').get(vmid) }));
+    // Complete preflight before the first write. A failed selection changes nothing.
+    for (const { vmid, guest, row } of selected) {
+      if (!guest || isProtected(vmid, guest)) return badRequest(reply, `Server ${vmid} is missing or protected`);
+      if (guest.lock || ['creating','deleting'].includes(row?.state)) return reply.code(409).send({ error: `Server ${vmid} is busy` });
+      const problem = row?.customer_id !== customer.id ? transferError(vmid, row) : deletionFor(vmid) ? 'Deletion is pending' : null;
+      if (problem) return reply.code(409).send({ error: `Server ${vmid}: ${problem}` });
+      if (customer.pools.length && !boundary.has(vmid)) return badRequest(reply, `Server ${vmid} is outside this customer’s pool boundary`);
+    }
+    if (customerById(customer.id)?.revision !== customer.revision || !customerById(customer.id)?.enabled) return reply.code(409).send({ error: 'Customer settings changed. Try again.' });
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const { vmid, guest, row } of selected) {
+        if (JSON.stringify(db.prepare('SELECT * FROM vms WHERE vmid=?').get(vmid)) !== JSON.stringify(row)) throw Object.assign(new Error('A server assignment changed. Try again.'), { statusCode: 409 });
+        const creator = row?.user_id ?? req.account.id;
+        db.prepare(`INSERT INTO vms(vmid,user_id,customer_id,type) VALUES(?,?,?,?)
+          ON CONFLICT(vmid) DO UPDATE SET customer_id=excluded.customer_id,type=excluded.type`).run(vmid, creator, customer.id, guest.type);
+        if (row?.customer_id !== customer.id) {
+          db.prepare(`UPDATE vms SET assigned_at=datetime('now'),expires_at=NULL,expiry_set_at=NULL,expiry_manual=0,expired_at=NULL,expiry_notified=NULL,self_extended=0 WHERE vmid=?`).run(vmid);
+          audit({ account: req.account, ip: req.ip, customerId: customer.id }, vmid, 'admin_vm_assign', { customerId: customer.id, previousCustomerId: row?.customer_id ?? null, bulk: true });
+        }
+      }
+      applyCustomerRule(req.account.id, customer.id);
+      db.exec('COMMIT');
+    } catch (err) { db.exec('ROLLBACK'); throw err; }
+    invalidateGuestCache();
+    return { assigned: selected.length, customerId: customer.id, customerName: customer.name };
+  });
+
   app.put('/api/admin/vms/:vmid', {
     schema: {
       body: {
@@ -373,6 +415,7 @@ export default async function adminRoutes(app) {
     const busy=before?.customer_id!==customer.id ? transferError(vmid,before) : null;
     if(busy) return reply.code(409).send({error:busy});
     const guest=await locateGuest(vmid);
+    if (isProtected(vmid, guest)) return reply.code(403).send({ error: 'This server is protected' });
     if(customer.pools.length) {
       const {customerHasGuest}=await import('../access.js');
       if(!await customerHasGuest(customer,guest,null)) return badRequest(reply,'The server is outside this customer’s pool boundary');
@@ -389,7 +432,7 @@ export default async function adminRoutes(app) {
     invalidateGuestCache();
     const renamedOnly = previous?.customer_id === customer.id;
     if (!renamedOnly) {
-      db.prepare(`UPDATE vms SET expires_at = NULL, expiry_set_at = NULL, expiry_manual = 0, expired_at = NULL,
+      db.prepare(`UPDATE vms SET assigned_at = datetime('now'), expires_at = NULL, expiry_set_at = NULL, expiry_manual = 0, expired_at = NULL,
                   expiry_notified = NULL, self_extended = 0 WHERE vmid = ?`).run(vmid);
       applyCustomerRule(user.id,customer.id);       // e.g. the customer's fixed end date
     }

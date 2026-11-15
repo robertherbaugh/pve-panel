@@ -54,7 +54,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   let loadRevision = 0;
   const st = {
     tab: 'servers', settingsTab: 'branding', users: [], vms: [], newUser: null,
-    templates: [], storages: {}, vpn: null,
+    templates: [], storages: {}, vpn: null, selectedServers: new Set(),
   };
   const gb = (mb) => `${+(mb / 1024).toFixed(1)} GB`;
 
@@ -200,16 +200,26 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
         <p class="muted" style="margin:0" id="vm-summary"></p>
 
       </div>
-      <div class="table-wrap">
+      <div class="server-bulk row" role="group" aria-label="Bulk server assignment">
+        <span data-selection-count role="status">0 selected</span>
+        <label>Assign selected to<select data-bulk-customer aria-label="Customer for selected servers"><option value="">Choose customer</option>${st.customerData.customers.filter(c=>c.enabled).map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
+        <button type="button" class="btn primary" data-bulk-assign disabled>Assign selected</button><button type="button" class="btn ghost" data-clear-selection>Clear selection</button>
+        <span class="hint">Selection includes checked servers on other pages and in filtered results.</span>
+      </div>
+      <div class="table-wrap servers-table-wrap">
         <table class="table" data-admin-table="Servers">
           <thead><tr>
-            <th>ID</th><th>Name in Proxmox</th><th>Node</th><th>Customer</th><th>Name shown to customer</th><th><span class="sr-only">Actions</span></th>
+            <th data-sortable="false"><input type="checkbox" data-table-selection data-select-page aria-label="Select servers on this page"></th><th>ID</th><th>Name in Proxmox</th><th>Node</th><th>Customer</th><th>Name shown to customer</th><th class="server-actions">Actions</th>
           </tr></thead>
           <tbody id="vm-rows"></tbody>
         </table>
       </div>
       <p class="muted small">Changes save immediately. Customers see a server as soon as it's assigned to them.</p>`;
     renderServerRows();
+    root.querySelector('[data-admin-table="Servers"]').addEventListener('admin-table-updated', updateServerSelection);
+    root.querySelector('[data-bulk-customer]').onchange = updateServerSelection;
+    root.querySelector('[data-bulk-assign]').onclick = bulkAssign;
+    root.querySelector('[data-clear-selection]').onclick = () => { st.selectedServers.clear(); updateServerSelection(); };
     const host = root.querySelector('#admin-body');
     sectionTabs(host, 'Servers', [{ id: 'inventory', label: 'Inventory', nodes: [...host.children] }]);
   }
@@ -304,6 +314,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
 
     root.querySelector('#vm-rows').innerHTML = rows.length ? rows.map((v) => `
       <tr data-vmid="${v.vmid}">
+        <td><input type="checkbox" data-table-selection data-select-server value="${v.vmid}" aria-label="Select server ${v.vmid} ${esc(v.name)}" ${st.selectedServers.has(v.vmid) ? 'checked' : ''} ${v.status === 'missing' || v.protected || ['creating','deleting'].includes(v.state) ? 'disabled' : ''}></td>
         <td class="mono">${v.vmid}</td>
         <td>
           <span class="led ${v.status === 'running' ? 'running' : ''}" title="${esc(v.status)}"></span>
@@ -326,9 +337,37 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
           <input data-label value="${esc(v.label ?? '')}" placeholder="${esc(v.name || `Server ${v.vmid}`)}"
                  maxlength="80" aria-label="Name shown to customer for server ${v.vmid}" ${v.userId ? '' : 'disabled'}>
         </td>
-        <td class="actions">${serverActions(v)}</td>
+        <td class="actions server-actions">${serverActions(v)}</td>
       </tr>`).join('')
-      : `<tr><td colspan="6" class="muted">No servers in the cluster.</td></tr>`;
+      : `<tr><td colspan="7" class="muted">No servers in the cluster.</td></tr>`;
+    updateServerSelection();
+  }
+
+  function pageServerCheckboxes() {
+    return [...root.querySelectorAll('#vm-rows tr:not([hidden]) [data-select-server]:not(:disabled)')];
+  }
+  function updateServerSelection() {
+    const count = root.querySelector('[data-selection-count]');
+    if (!count) return;
+    const allowed = new Set(st.vms.filter(v => v.status !== 'missing' && !v.protected && !['creating','deleting'].includes(v.state)).map(v => v.vmid));
+    for (const id of st.selectedServers) if (!allowed.has(id)) st.selectedServers.delete(id);
+    root.querySelectorAll('[data-select-server]').forEach(c => { c.checked = st.selectedServers.has(Number(c.value)); });
+    const visible = pageServerCheckboxes(), selected = visible.filter(c => c.checked).length;
+    const all = root.querySelector('[data-select-page]');
+    all.checked = !!visible.length && selected === visible.length; all.indeterminate = selected > 0 && selected < visible.length; all.disabled = !visible.length;
+    count.textContent = `${st.selectedServers.size} selected`;
+    root.querySelector('[data-bulk-assign]').disabled = !st.selectedServers.size || !root.querySelector('[data-bulk-customer]').value;
+  }
+  async function bulkAssign() {
+    const vmids = [...st.selectedServers], customerId = Number(root.querySelector('[data-bulk-customer]').value);
+    const customer = st.customerData.customers.find(c => c.id === customerId);
+    if (!vmids.length || !customer) return;
+    if (!await confirmAction(`Assign ${vmids.length} selected servers to ${customer.name}? Existing customer assignments will change. Server display names are preserved.`, 'Assign servers')) return;
+    const button = root.querySelector('[data-bulk-assign]'); button.disabled = true;
+    try {
+      const result = await api('/api/admin/vms/assign', { method: 'POST', body: { vmids, customerId } });
+      st.selectedServers.clear(); toast(`${result.assigned} servers assigned to ${result.customerName}`); await load({ quiet: true });
+    } catch (err) { fail(err); updateServerSelection(); }
   }
 
   async function saveAssignment(row) {
@@ -1623,6 +1662,14 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
   });
 
   root.addEventListener('change', async (e) => {
+    if (e.target.matches('[data-select-page]')) {
+      for (const c of pageServerCheckboxes()) e.target.checked ? st.selectedServers.add(Number(c.value)) : st.selectedServers.delete(Number(c.value));
+      updateServerSelection(); return;
+    }
+    if (e.target.matches('[data-select-server]')) {
+      e.target.checked ? st.selectedServers.add(Number(e.target.value)) : st.selectedServers.delete(Number(e.target.value));
+      updateServerSelection(); return;
+    }
     if (e.target.matches?.('[data-setup-only]')) {
       st.setupOnlyProblems = e.target.checked;
       renderSetupCheck();

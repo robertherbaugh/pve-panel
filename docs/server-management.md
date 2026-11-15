@@ -9,3 +9,9 @@ The provider API identity needs Proxmox `VM.Allocate` on the target VM in additi
 Deletion records retain the task ID independently of customer assignment. Restart recovery follows that task and verifies cluster-wide VM absence before releasing compute reservations. Unknown submissions are not repeated automatically. A deletion marked for review keeps reservations held and blocks reassignment and other mutations. Resolve the recorded Proxmox task or verify the outcome before another attempt.
 
 Retained backups follow the configured retention policy. Their Basic storage reservations remain billable until those archives are explicitly removed. Deleting compute does not silently discard retained backup charges.
+
+## Bulk assignment
+
+The Servers table supports row selection and selecting the current page. Selection survives paging, sorting and filtering; the count includes selected guests hidden by the current filter. Clear selection explicitly to discard it. Choose an enabled customer and confirm before assigning the selection.
+
+The batch API checks every guest and target pool before opening a single database transaction. A missing, protected, busy, or out-of-boundary guest rejects the whole selection. Catalog allocations cannot be moved by this shortcut because their reservation history belongs to the original customer. Display names are preserved. A transfer resets the assignment timestamp and expiry stages and applies the target customer's expiry rule.

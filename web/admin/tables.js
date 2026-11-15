@@ -143,6 +143,7 @@ function enhance(table, api) {
     visible.forEach(r => { r.hidden = false; });
     empty.hidden = !!total; if (!empty.isConnected) body.append(empty);
     controls();
+    table.dispatchEvent(new CustomEvent('admin-table-updated'));
   }
   async function update() {
     clearTimeout(timer);
@@ -180,7 +181,7 @@ function enhance(table, api) {
   clear.onclick = () => { state.q = ''; state.filters = {}; search.value = ''; filters.querySelectorAll('input').forEach(i => { i.value = ''; }); change(); };
   const refresh = () => update();
   table.addEventListener('admin-table-refresh', refresh);
-  const input = () => { if (!remote) local(); };
+  const input = event => { if (!remote && !event.target.hasAttribute('data-table-selection')) local(); };
   table.addEventListener('change', input);
   if (remote) update(); else sync();
   return { sync, destroy() { destroyed = true; ++revision; clearTimeout(timer); table.removeEventListener('admin-table-refresh', refresh); table.removeEventListener('change', input); } };
