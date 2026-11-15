@@ -58,7 +58,10 @@ Resize records durable steps and replaces the previous capacity reservation afte
 Catalog reinstall preserves the offering, VM ID, MAC address, storage class and destination node.
 The VM must be stopped. New credentials apply before first boot.
 Recorded delete and clone tasks support restart recovery. Unknown submissions retain their reservations.
-Catalog full restore needs separate integration.
+Catalog restore pins the destination datastore and reapplies the reserved hardware and guest network before boot.
+The VM must be stopped. The backup disk must fit within the current reservation.
+Older, smaller disks grow to the reserved capacity. Accepted restore tasks resume after a restart.
+An unknown restore submission needs provider investigation before another overwrite.
 Existing creation and lifecycle operations continue for customers without catalog opt-in.
 Do not enable catalog provisioning broadly before the pilot passes on the target infrastructure.
 

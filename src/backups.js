@@ -1,5 +1,8 @@
 import { backupServiceSelected, requireBackupService, backupUsage, backupReservation, reserveCatalogBackup, retainBackup, trackedBackup, releaseBackupVolume } from './compute-backups.js';
-import { computeManaged } from './compute-state.js';
+import { runCatalogRestore } from './compute-restore.js';
+import { selectPlacement } from './compute-placement.js';
+import { lifecycleFailed } from './compute-lifecycle.js';
+import { computeManaged, allocationFor, assertComputeIdle, beginOperation, operationById, updateOperation } from './compute-state.js';
 // Backups for customers, stored on a Proxmox Backup Server (or any backup
 // storage) through the Proxmox VE API — the panel never talks to PBS directly
 // and never holds PBS credentials.
@@ -15,7 +18,7 @@ import { computeManaged } from './compute-state.js';
 
 import { db, audit } from './db.js';
 import { config } from './config.js';
-import { pve, clusterGuests, guestPath, waitTask, invalidateGuestCache, PveError } from './pve.js';
+import { pve, clusterGuests, guestPath, waitTask, invalidateGuestCache, PveError, serial, bootDiskKey, diskSizeGb } from './pve.js';
 import { networkOf, ensureIsolation } from './network.js';
 import { customerById,personalCustomerId } from './tenancy.js';
 import { capacityLocks,capacityBusy } from './capacity.js';
@@ -189,7 +192,7 @@ export async function backupInfo(row, guest) {
     max,
     used: backups.filter((b) => b.kind !== 'provider').length,
     fileRestore: type === 'pbs',
-    restore: !computeManaged(row.vmid) && ['qemu', 'lxc'].includes(guest.type),
+    restore: ['qemu', 'lxc'].includes(guest.type),
     canCreate: backupServiceSelected(row.customer_id, row.vmid),
     storageUsage: backupUsage(row.customer_id),
     schedulesAllowed: s.schedules && backupServiceSelected(row.customer_id, row.vmid),
@@ -245,11 +248,43 @@ function parseConfig(text) {
 }
 
 export async function startRestore(req,row,guest,options) {
-  if (computeManaged(row.vmid)) throw new BackupError(409, 'Catalog restore is not available yet. This protects the VM’s reserved size and storage class.');
+  assertComputeIdle(row.vmid);
   if(capacityBusy(row.customer_id)) throw new BackupError(409,'Another operation is changing this customer’s resource usage');
   const key=`customer:${row.customer_id}`; capacityLocks.add(key);
-  try { return await prepareRestore(req,row,guest,options); } finally { capacityLocks.delete(key); }
+  try { return allocationFor(row.vmid) ? await prepareCatalogRestore(req,row,guest,options) : await prepareRestore(req,row,guest,options); } finally { capacityLocks.delete(key); }
 }
+async function prepareCatalogRestore(req,row,guest,{volid,backupFirst=true,start=false}) {
+  guest=(await clusterGuests(true)).get(row.vmid);
+  if (row.state!=='ready' || !guest || guest.type!=='qemu' || guest.status!=='stopped') throw new BackupError(409,'Stop the VM before restoring a catalog backup');
+  if (!backupsAvailableFor(row.user_id,row.customer_id)) throw new BackupError(403,'Backups are not available for your account');
+  busyCheck(row.vmid);
+  if (activeWindowsUpdate(row.vmid)) throw new BackupError(409,'Wait for Windows updates to finish');
+  await requireVisible(row,guest,volid);
+  const allocation=allocationFor(row.vmid),offering=allocation.offering;
+  if (offering.haEnabled) throw new BackupError(409,'Disable HA before restoring this VM');
+  const [cfg,backup]=await Promise.all([pve.get(`${guestPath(guest)}/config`),pve.get(`/nodes/${encodeURIComponent(guest.node)}/vzdump/extractconfig`,{volume:volid}).then(parseConfig)]);
+  const disks=Object.entries(backup).filter(([k,v])=>/^(scsi|sata|virtio|ide)\d+$/.test(k)&&!/media=cdrom|cloudinit/.test(String(v))&&!String(v).startsWith('none'));
+  if (cfg.lock || guest.lock || disks.length!==1 || Object.keys(backup).some(k=>/^net[1-9][0-9]*$/.test(k))) throw new BackupError(409,'The backup must have one data disk and at most one guest network interface');
+  if (!(diskTotalGb(backup)>0) || diskTotalGb(backup)>offering.diskGb) throw new BackupError(409,'This backup does not fit the reserved disk capacity');
+  const disk=bootDiskKey(cfg),storage=String(cfg[disk]).split(':')[0],spec=JSON.parse(row.spec),pool=spec.pool??config.pve.pool;
+  const customer=customerById(row.customer_id);
+  if (customer.pools.length && !customer.pools.includes(pool)) throw new BackupError(403,'VM pool is outside this customer');
+  if (backupFirst) {
+    requireBackupService(row.customer_id,row.vmid);
+    if ((await visibleBackups(row,guest)).filter(b=>b.kind!=='provider').length>=maxBackupsFor(row.user_id,row.customer_id)) throw new BackupError(409,'Delete a backup before saving the current state');
+  }
+  let job;
+  await serial(async()=>{
+    const plan=await selectPlacement({offering,template:guest,sourceConfig:cfg,pool,existing:{vmid:row.vmid,node:guest.node,storage,diskGb:0}});
+    beginOperation({customerId:row.customer_id,userId:req.account.id,vmid:row.vmid,kind:'restored',plan:{...plan,volid,start:!!start,net0:cfg.net0},onReserve:id=>{
+      db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Restoring backup',spec=? WHERE vmid=?").run(JSON.stringify({...spec,operationId:id}),row.vmid);
+      job=insertJob(row,'restore',null,{volid,backupFirst:!!backupFirst,start:!!start,computeOperationId:id,storage:backupSettings().storage},req.account.id);
+    }});
+  });
+  audit(req,row.vmid,'backup_restore_started',{backup:volid,backupFirst});
+  return job;
+}
+
 async function prepareRestore(req, row, guest, { volid, backupFirst = true, start = null }) {
   if (!backupsAvailableFor(row.user_id,row.customer_id)) throw new BackupError(403, 'Backups are not available for your account');
   busyCheck(row.vmid);
@@ -389,7 +424,7 @@ function pump() {
   while (active < PARALLEL && queue.length) {
     const id = queue.shift();
     active += 1;
-    runJob(id).catch((err) => logger?.warn(`Backup job ${id}: ${err.message}`)).finally(() => { active -= 1; pump(); });
+    runJob(id,{resume:!!db.prepare('SELECT upid FROM backup_jobs WHERE id=?').get(id)?.upid}).catch((err) => logger?.warn(`Backup job ${id}: ${err.message}`)).finally(() => { active -= 1; pump(); });
   }
 }
 
@@ -454,6 +489,19 @@ async function runJob(id, { resume = false } = {}) {
     const owner=db.prepare('SELECT customer_id FROM vms WHERE vmid=?').get(job.vmid);
     if(!owner||owner.customer_id!==job.customer_id) throw new BackupError(409,'Server ownership changed');
     const guest = await locate(job.vmid);
+    const catalogOptions=JSON.parse(job.options??'{}');
+    if (catalogOptions.computeOperationId) {
+      const id=catalogOptions.computeOperationId;
+      if (catalogOptions.backupFirst && !catalogOptions.beforeDone) {
+        await backupNow(job,guest,'before-restore',resume?job.upid:null);
+        catalogOptions.beforeDone=true;
+        setJob(job.id,{options:JSON.stringify(catalogOptions),upid:null});
+      }
+      setJob(job.id,{state:'running',step:'Restoring',node:guest.node});
+      const success=await runCatalogRestore(id),op=operationById(id);
+      setJob(job.id,{state:success?'done':'failed',step:null,error:success?null:op.error,finished_at:new Date().toISOString()});
+      return;
+    }
     if (job.action === 'backup') {
       const volid = await backupNow(job, guest, job.kind, resume ? job.upid : null);
       if (job.kind === 'scheduled') {
@@ -516,6 +564,7 @@ async function runJob(id, { resume = false } = {}) {
   } catch (err) {
     const message = String(err.message || err).slice(0, 500);
     setJob(id, { state: 'failed', step: null, error: message, finished_at: new Date().toISOString() });
+    const computeId=JSON.parse(job.options??'{}').computeOperationId; if (computeId) lifecycleFailed(computeId,err);
     if (job.kind === 'scheduled') db.prepare('UPDATE backup_schedules SET last_error = ? WHERE vmid = ?').run(message, job.vmid);
     audit(actor, job.vmid, job.action === 'restore' ? 'backup_restore_failed' : 'backup_failed', { error: message });
   }
@@ -525,7 +574,7 @@ async function runJob(id, { resume = false } = {}) {
 function resumeJobs(log) {
   const open = db.prepare("SELECT * FROM backup_jobs WHERE state IN ('queued', 'running') ORDER BY id").all();
   for (const j of open) {
-    if (j.state === 'queued') { enqueue(j.id); continue; }
+    if (j.state === 'queued' || JSON.parse(j.options??'{}').computeOperationId) { enqueue(j.id); continue; }
     if (j.upid && (j.action === 'backup' || j.step === 'Restoring')) {
       active += 1;
       runJob(j.id, { resume: true }).finally(() => { active -= 1; pump(); });
@@ -534,6 +583,15 @@ function resumeJobs(log) {
     }
   }
   if (open.length) log.info(`Backups: ${open.length} job(s) resumed after the restart`);
+}
+
+export async function resumeCatalogRestore(id) {
+  const job=db.prepare("SELECT * FROM backup_jobs WHERE action='restore' AND json_extract(options,'$.computeOperationId')=? ORDER BY id DESC LIMIT 1").get(id);
+  if (!job || ['queued','running'].includes(job.state)) throw new BackupError(409,'This restore is not awaiting reconciliation');
+  setJob(job.id,{state:'queued',error:null,finished_at:null});
+  updateOperation(id,'restoring');
+  enqueue(job.id);
+  return {accepted:true};
 }
 
 export function startBackupScheduler(log) {

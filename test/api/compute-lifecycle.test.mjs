@@ -76,3 +76,36 @@ test('reinstall follows an accepted clone after restart and keeps one allocation
  assert.equal(sql.prepare('SELECT count(*) n FROM compute_allocations WHERE vmid=? AND ended_at IS NULL').get(vmid).n,1);
  stack.mock.cluster.cloneDelay=2500;
 });
+let archive;
+test('catalog restore pins the datastore and reapplies reserved hardware and network before boot',async()=>{
+ for(const node of ['pve1','pve2']) stack.mock.cluster.storageInventories[node].push({storage:'pbs',type:'pbs',content:'backup',active:1,enabled:1,shared:1,avail:900*2**30,total:1000*2**30});
+ let c=catalogBody((await admin.get('/api/admin/compute-catalog')).json);c.classes[0].enabled=true;c.classes[0].bindings=[{node:'pve2',storage:'pbs',purpose:'backup'}];assert.equal((await admin.put('/api/admin/compute-catalog',c)).status,200);
+ const p=(await admin.get(`/api/admin/customers/${customerId}/compute-profile`)).json;
+ const {revision,tier,sizeIds,storageClassIds,haAllowed,storageLimitsGb,backupLimitGb,catalogEnabled,network}=p;
+ assert.equal((await admin.put(`/api/admin/customers/${customerId}/compute-profile`,{revision,catalogRevision:c.revision+1,tier,sizeIds,storageClassIds,haAllowed,storageLimitsGb,backupLimitGb,catalogEnabled,network,backupServiceEnabled:true})).status,200);
+ assert.equal((await admin.put('/api/admin/settings/backups',{enabled:true,storage:'pbs',maxPerServer:10})).status,200);
+ const b=await user.post(`/api/vms/${vmid}/backups`);assert.equal(b.status,202,b.text);
+ const job=await waitFor(()=>{const j=sql.prepare('SELECT * FROM backup_jobs WHERE id=?').get(b.json.id);return j.state==='done'?j:null;});archive=job.volid;
+ stack.mock.vms.get(vmid).status='stopped';
+ const backup=stack.mock.backups.get(archive);backup.cfg.cores=8;backup.cfg.memory=16384;backup.cfg.net0='virtio=00:00:00:11:22:33,bridge=old-bridge';backup.cfg.scsi0=backup.cfg.scsi0.replace(/^nvme:/,'old-storage:').replace('size=35G','size=20G');
+ const r=await user.post(`/api/vms/${vmid}/backups/restore`,{id:archive,backupFirst:false,start:true});assert.equal(r.status,202,r.text);
+ const j=await waitFor(()=>{const j=sql.prepare('SELECT * FROM backup_jobs WHERE id=?').get(r.json.id);return ['done','failed'].includes(j.state)?j:null;});assert.equal(j.state,'done',j.error);
+ const vm=stack.mock.vms.get(vmid);assert.match(vm.cfg.scsi0,/^nvme:.*size=35G/);assert.equal(Number(vm.cfg.cores),1);assert.equal(Number(vm.cfg.memory),2048);assert.match(vm.cfg.net0,/bridge=vmbr0,tag=47,firewall=1/);assert.equal(vm.status,'running');
+ assert.equal(sql.prepare("SELECT count(*) n FROM compute_allocation_events e JOIN compute_allocations a ON a.id=e.allocation_id WHERE a.vmid=? AND e.kind='restored'").get(vmid).n,1);
+});
+test('catalog restore rejects oversized archives and extra network interfaces before overwrite',async()=>{
+ stack.mock.vms.get(vmid).status='stopped';const b=stack.mock.backups.get(archive),disk=b.cfg.scsi0;
+ b.cfg.scsi0=disk.replace('size=20G','size=100G');assert.equal((await user.post(`/api/vms/${vmid}/backups/restore`,{id:archive,backupFirst:false})).status,409);b.cfg.scsi0=disk;
+ b.cfg.net1='virtio,bridge=other';assert.equal((await user.post(`/api/vms/${vmid}/backups/restore`,{id:archive,backupFirst:false})).status,409);delete b.cfg.net1;
+ assert.match(stack.mock.vms.get(vmid).cfg.scsi0,/size=35G/);
+});
+test('accepted catalog restore survives restart with one retained allocation',async()=>{
+ stack.mock.cluster.restoreDelay=5000;
+ const r=await user.post(`/api/vms/${vmid}/backups/restore`,{id:archive,backupFirst:false});assert.equal(r.status,202,r.text);
+ const op=sql.prepare("SELECT id FROM compute_operations WHERE vmid=? AND kind='restored' ORDER BY rowid DESC LIMIT 1").get(vmid);
+ await waitFor(()=>sql.prepare("SELECT 1 FROM compute_operation_steps WHERE operation_id=? AND name='restore' AND state='running'").get(op.id));
+ await stack.restartPanel();
+ const j=await waitFor(()=>{const j=sql.prepare('SELECT * FROM backup_jobs WHERE id=?').get(r.json.id);return ['done','failed'].includes(j.state)?j:null;});assert.equal(j.state,'done',j.error);
+ assert.equal(sql.prepare('SELECT count(*) n FROM compute_allocations WHERE vmid=? AND ended_at IS NULL').get(vmid).n,1);
+ stack.mock.cluster.restoreDelay=1500;
+});

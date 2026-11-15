@@ -15,7 +15,7 @@ import { setupWindows, windowsPasswordProblem } from './windows.js';
 import { agentExec } from './agent.js';
 import { expiryForNewServer } from './expiry.js';
 import { activeRun } from './winupdate.js';
-import { forgetServerBackups } from './backups.js';
+import { forgetServerBackups, resumeCatalogRestore } from './backups.js';
 import { offeredContainerTemplates, containerRow, containerParams, containerMac } from './containers.js';
 import { cloneRule, cloneRules, withLimits, customerHasGuest, poolMembers } from './access.js';
 
@@ -851,6 +851,7 @@ async function runCatalogReinstall(id) {
 
 export function startComputeRecovery(log) {
   for (const op of pendingOperations()) {
+    if (op.kind === 'restored') continue; // The backup queue owns restore recovery.
     if (op.kind === 'reinstalled') { runCatalogReinstall(op.id); continue; }
     if (op.kind === 'resized') { runCatalogResize(op.id); continue; }
     if (op.kind !== 'create') { updateOperation(op.id, 'review', { error: 'Interrupted operation needs reconciliation' }); continue; }
@@ -871,6 +872,7 @@ export function startComputeRecovery(log) {
 // Resume only an existing, identifiable VM. Never retry a clone POST.
 export async function reconcileComputeOperation(req, id, action) {
   const op = operationById(id);
+  if (op?.state==='review' && op.kind==='restored' && action==='resume') return resumeCatalogRestore(id);
   if (op?.kind==='reinstalled' && !operationStep(id,'clone')) throw new ProvisionError(409,'An unknown deletion requires provider investigation');
   if (op?.state === 'review' && op.kind === 'resized' && action === 'resume') {
     updateOperation(id,'configuring');

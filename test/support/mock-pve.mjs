@@ -281,7 +281,9 @@ export async function startMockPve({ port = 0 } = {}) {
         if (vm.status !== 'stopped') return send(res, null, 500, `unable to restore CT ${vmid} - CT is running`);
         vm.lock = 'create';
         return send(res, task('vzrestore', vmid, 1500, () => {
-          vm.cfg = JSON.parse(JSON.stringify(bk.cfg)); vm.fwRules = JSON.parse(JSON.stringify(bk.fwRules)); vm.fwOptions = { ...bk.fwOptions };
+          vm.cfg = JSON.parse(JSON.stringify(bk.cfg));
+        if(b.storage) for(const k of Object.keys(vm.cfg)) if (/^((scsi|sata|virtio|ide)\d+|efidisk0|tpmstate0)$/.test(k) && !/media=cdrom/.test(String(vm.cfg[k]))) vm.cfg[k]=String(vm.cfg[k]).replace(/^[^:]+:/,`${b.storage}:`);
+        vm.fwRules = JSON.parse(JSON.stringify(bk.fwRules)); vm.fwOptions = { ...bk.fwOptions };
           vm.restoredFrom = bk.volid; vm.restoreStorage = b.storage; delete vm.lock;
         }));
       }
@@ -304,10 +306,14 @@ export async function startMockPve({ port = 0 } = {}) {
       if (vm.status !== 'stopped') return send(res, null, 500, `unable to restore VM ${vmid} - VM is running`);
       log('RESTORE', vmid, b.archive);
       vm.lock = 'create';
-      return send(res, task('qmrestore', vmid, 1500, () => {
-        vm.cfg = JSON.parse(JSON.stringify(bk.cfg)); vm.fwRules = JSON.parse(JSON.stringify(bk.fwRules)); vm.fwOptions = { ...bk.fwOptions };
+      const upid=task('qmrestore', vmid, cluster.restoreDelay ?? 1500, () => {
+        vm.cfg = JSON.parse(JSON.stringify(bk.cfg));
+        if(b.storage) for(const k of Object.keys(vm.cfg)) if (/^((scsi|sata|virtio|ide)\d+|efidisk0|tpmstate0)$/.test(k) && !/media=cdrom/.test(String(vm.cfg[k]))) vm.cfg[k]=String(vm.cfg[k]).replace(/^[^:]+:/,`${b.storage}:`);
+        vm.fwRules = JSON.parse(JSON.stringify(bk.fwRules)); vm.fwOptions = { ...bk.fwOptions };
         vm.maxcpu = Number(vm.cfg.cores) || 1; vm.maxmem = (Number(vm.cfg.memory) || 512) * 2 ** 20; vm.restoredFrom = bk.volid; delete vm.lock;
-      }));
+      });
+      if (cluster.loseRestoreResponse) {cluster.loseRestoreResponse=false;return res.destroy();}
+      return send(res,upid);
     }
     if (p === '/cluster/sdn/zones' && req.method==='GET') return send(res, sdn.zones);
     if (p === '/cluster/sdn/zones' && req.method==='POST') { const b = await body(req); log('SDN ZONE', JSON.stringify(b)); sdn.zones.push({zone:b.zone,type:b.type,dhcp:b.dhcp}); sdn.pending++; return send(res,null); }
