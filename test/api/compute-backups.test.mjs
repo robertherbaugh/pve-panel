@@ -86,3 +86,12 @@ test('retained backup reservations survive VM deletion and panel restart',async(
  assert.equal((await user.get('/api/compute-backup-usage')).json.reservedBytes,40*2**30);
  assert.ok(stack.mock.backups.has(first.volid));
 });
+test('customer administrators manage retained archives after VM deletion without crossing customer boundaries',async()=>{
+ const listed=await user.get('/api/retained-backups');assert.equal(listed.status,200,listed.text);assert.ok(listed.json.archives.length>0);
+ const item=listed.json.archives[0],before=(await user.get('/api/compute-backup-usage')).json.reservedBytes;
+ const peer=await stack.customerWith('other-retained@example.com');assert.equal((await peer.del(`/api/retained-backups/${item.id}`)).status,404);
+ stack.mock.backups.get(item.archive).protected=1;assert.equal((await user.del(`/api/retained-backups/${item.id}`)).status,403);stack.mock.backups.get(item.archive).protected=0;
+ assert.equal((await user.del(`/api/retained-backups/${item.id}`)).status,204);assert.ok(!stack.mock.backups.has(item.archive));
+ assert.equal((await user.get('/api/compute-backup-usage')).json.reservedBytes,before-item.reservedBytes);
+ const remaining=(await user.get('/api/retained-backups')).json.archives[0];if(remaining){stack.mock.backups.delete(remaining.archive);assert.equal((await user.del(`/api/retained-backups/${remaining.id}`)).status,204);assert.equal(sql.prepare('SELECT state FROM compute_backup_reservations WHERE job_id=?').get(remaining.id).state,'released');}
+});

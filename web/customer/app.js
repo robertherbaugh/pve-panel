@@ -1,3 +1,4 @@
+import {renderRetainedBackups} from './retained-backups.js';
 import { renderComputeServices } from './compute-services.js';
 import { renderSshKeys } from './ssh-keys.js';
 import {
@@ -2002,6 +2003,7 @@ function openAccount() {
       <div id="passkeys" class="account-section"></div>
       <div id="ssh-keys" class="account-section"></div>
       <div id="compute-services" class="account-section"></div>
+      <div id="retained-backups" class="account-section"></div>
       ${state.account.panelVersion ? `
         <section class="security-card about-panel">
           <div>
@@ -2014,6 +2016,7 @@ function openAccount() {
   renderPasskeys($('#passkeys'));
   renderSshKeys($('#ssh-keys'));
   renderComputeServices($('#compute-services'));
+  if(state.account.customer?.role==='admin')renderRetainedBackups($('#retained-backups'));
 }
 $('#nav-account').addEventListener('click', openAccount);
 
