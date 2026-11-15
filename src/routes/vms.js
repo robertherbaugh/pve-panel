@@ -1,3 +1,4 @@
+import { backupUsage } from '../compute-backups.js';
 import { computeManaged, assertComputeIdle } from '../compute-state.js';
 import { Readable } from 'node:stream';
 import { db, audit } from '../db.js';
@@ -207,6 +208,7 @@ export default async function vmRoutes(app) {
   });
 
   app.get('/api/compute-offerings', async req => customerOfferings(requireCustomer(req).id));
+  app.get('/api/compute-backup-usage', async req => backupUsage(requireCustomer(req).id));
   app.get('/api/compute-allocations', async req => ({ events: allocationHistory(requireCustomer(req).id) }));
 
   app.get('/api/templates', async (req, reply) => {

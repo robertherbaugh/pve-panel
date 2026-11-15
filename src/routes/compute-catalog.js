@@ -1,3 +1,4 @@
+import { backupReservations, reconcileBackupReservation } from '../compute-backups.js';
 import { computeOperations } from '../compute-state.js';
 import { reconcileComputeOperation } from '../provision.js';
 import { audit } from '../db.js';
@@ -7,6 +8,12 @@ import { computeInventory, previewCompute } from '../compute-inventory.js';
 export default async function computeCatalogRoutes(app) {
   app.addHook('preHandler', app.requireAdmin);
   app.addHook('onSend', async (_req, reply, payload) => { reply.header('Cache-Control', 'no-store'); return payload; });
+  app.get('/api/admin/compute-backup-reservations', async () => ({ reservations: backupReservations() }));
+  app.post('/api/admin/compute-backup-reservations/:id/reconcile', async req => {
+    const result = await reconcileBackupReservation(Number(req.params.id));
+    audit(req, null, 'admin_backup_reservation_reconcile', { jobId: Number(req.params.id) });
+    return result;
+  });
   app.get('/api/admin/compute-operations', async () => ({ operations: computeOperations() }));
   app.post('/api/admin/compute-operations/:id/reconcile', { schema: { body: { type: 'object', additionalProperties: false, required: ['action'], properties: { action: { enum: ['resume', 'release'] } } } } }, async (req) => reconcileComputeOperation(req, req.params.id, req.body.action));
   app.get('/api/admin/compute-catalog', async () => computeCatalog());

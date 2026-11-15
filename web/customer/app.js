@@ -1140,8 +1140,10 @@ async function renderBackups(body) {
           <h2>Backups</h2>
           <p class="muted small">A backup is a full copy of the server, kept outside it. ${b.used} of ${b.max} backups made by you are in use.</p>
         </div>
-        <button class="btn primary" data-backup-now ${working || !room || !can('backup.create') ? 'disabled' : ''}>${icon('archive')}<span>Back up now</span></button>
+        <button class="btn primary" data-backup-now ${working || !room || b.canCreate === false || !can('backup.create') ? 'disabled' : ''}>${icon('archive')}<span>Back up now</span></button>
       </div>
+      ${b.canCreate === false ? '<p class="muted">The backup service add-on is not selected. Existing backups remain available.</p>' : ''}
+      ${b.storageUsage?.reservedBytes ? `<p class="muted small">Basic backup storage reservation: ${bytes(b.storageUsage.reservedBytes)}${b.storageUsage.limitGb ? ` of ${b.storageUsage.limitGb} GiB` : ''}. Storage usage is separate from the backup service fee.</p>` : ''}
       ${b.error ? `<div class="notice warn"><p>${esc(b.error)}</p></div>` : ''}
       ${working ? `<div class="notice backup-progress"><p class="progress-step"><span class="spinner" aria-hidden="true"></span>
           ${esc(j.action === 'restore' ? `Restoring: ${j.step ?? 'starting'}` : (j.step ?? 'Backing up'))}…</p>

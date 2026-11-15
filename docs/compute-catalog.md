@@ -99,7 +99,8 @@ A null size list permits all enabled sizes, including future sizes. An empty lis
 Profiles also define class-specific disk limits and a separate backup storage limit.
 A zero limit adds no cap beyond the existing aggregate customer quota.
 Catalog creation enforces size restrictions, storage classes, class limits and existing aggregate quotas.
-Backup entitlement enforcement and HA activation need separate integration.
+Catalog backups enforce service selection, Basic destinations and the shared backup quota.
+HA activation needs separate integration.
 
 HA activation changes capacity requirements and service commitments.
 Record the applicable SLA and MSA acceptance before activating HA for a customer VM.
@@ -122,7 +123,9 @@ The current hosted Tailscale integration needs an extension before it can enroll
 Charge for allocated reservations, including stopped VMs.
 Record disk allocation by storage class and keep it billable while retained.
 Keep backup service fees separate from Basic backup storage usage.
-Define a backup storage measure before pricing compressed or deduplicated PBS data.
+Backup quotas reserve each VM’s logical disk capacity per backup.
+Reported archive bytes remain separate from PBS physical usage.
+Choose pricing rules for compressed or deduplicated PBS data before enabling invoices.
 
 Catalog revisions preserve offering definitions.
 Catalog creation records durable operations, encrypted temporary credentials, capacity reservations and allocation events.
@@ -130,6 +133,25 @@ Deletion closes the allocation after the panel checks VM absence.
 Resize, storage changes, add-ons and adoption need additional allocation events.
 Migration must not create a second charge for the same allocation.
 Do not activate invoicing until allocation reconciliation and pricing rules are complete.
+
+## Basic backup execution
+
+Catalog customers must select the backup service before creating backups or schedules.
+Ridge and Summit include the service fee. They do not automatically select or schedule the service.
+Existing archives remain visible when the service is deselected.
+The provider's configured backup storage must have an enabled Basic mapping on the VM's node.
+The job checks live availability, allocation permissions and free capacity before calling vzdump.
+Queued and scheduled jobs use the same checks.
+Jobs retain their selected destination across settings changes and restarts.
+
+A durable reservation enforces the customer's shared backup quota before the dump starts.
+The quota uses logical VM disk capacity, including retained archives after VM deletion.
+Archive bytes are recorded separately. They do not represent physical PBS consumption.
+Checked archive deletion releases its reservation.
+Unknown outcomes retain their quota.
+Providers can discover a completed archive by its job marker under **Compute operations**.
+An unresolved submission without a matching archive needs manual provider investigation.
+These records prepare usage accounting. They do not activate prices or invoices.
 
 ## Delivery sequence
 
@@ -156,11 +178,13 @@ Customers select offerings. Administrators maintain the infrastructure that can 
 | GET | `/api/admin/customers/:id/compute-profile` | Read a customer's offerings. |
 | PUT | `/api/admin/customers/:id/compute-profile` | Save offerings with current profile and catalog revisions. |
 
+| GET | `/api/admin/compute-backup-reservations` | Review Basic backup reservations. |
+| POST | `/api/admin/compute-backup-reservations/:id/reconcile` | Find a completed archive after an uncertain result. |
 | GET | `/api/admin/compute-operations` | Review recent operations and provider diagnostics. |
 | POST | `/api/admin/compute-operations/:id/reconcile` | Resume an identified VM or release a checked failed reservation. |
 
 The customer portal exposes none of these administration routes.
-Customers read eligible offerings at `/api/compute-offerings` and allocation events at `/api/compute-allocations`.
+Customers read offerings at `/api/compute-offerings`, allocations at `/api/compute-allocations` and backup reservations at `/api/compute-backup-usage`.
 Catalog creates use `/api/vms` with an `Idempotency-Key` header.
 The server fixes `backupClassId` to `basic`, `billingMode` to `reservation` and catalog `rollout` to `customer-opt-in`.
 Clients cannot change these fields.

@@ -227,13 +227,15 @@ export async function startMockPve({ port = 0 } = {}) {
       if (!vm) return send(res, null, 500, `unable to find VM ${vmid}`);
       if (!['pbs', 'local'].includes(b.storage)) return send(res, null, 500, `storage '${b.storage}' does not exist`);
       log('VZDUMP', vmid, JSON.stringify(b));
-      return send(res, task('vzdump', vmid, 1200, () => {
+      const upid = task('vzdump', vmid, 1200, () => {
         const ctime = Math.max(Math.floor(Date.now() / 1000), lastCtime + 1); lastCtime = ctime;
         const stamp = new Date(ctime * 1000).toISOString().replace(/\.\d+Z$/, 'Z');
         const volid = b.storage === 'pbs' ? `pbs:backup/vm/${vmid}/${stamp}` : `local:backup/vzdump-qemu-${vmid}-${stamp.replace(/[-:]/g, '_')}.vma.zst`;
         backups.set(volid, { volid, storage: b.storage, vmid, ctime, size: 1_234_567_890, notes: String(b['notes-template'] ?? '').replace('{{guestname}}', vm.name),
           protected: 0, cfg: JSON.parse(JSON.stringify(vm.cfg)), fwRules: JSON.parse(JSON.stringify(vm.fwRules ?? [])), fwOptions: { ...(vm.fwOptions ?? {}) } });
-      }));
+      });
+      if (cluster.loseBackupResponse) {cluster.loseBackupResponse=false;return res.destroy();}
+      return send(res,upid);
     }
     if (/^\/nodes\/[^/]+\/vzdump\/extractconfig$/.test(p)) {
       const bk = backups.get(u.searchParams.get('volume')); if (!bk) return send(res, null, 500, 'volume does not exist');

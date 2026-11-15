@@ -1,3 +1,4 @@
+import { backupServiceSelected, requireBackupService, backupUsage, backupReservation, reserveCatalogBackup, retainBackup, trackedBackup, releaseBackupVolume } from './compute-backups.js';
 import { computeManaged } from './compute-state.js';
 // Backups for customers, stored on a Proxmox Backup Server (or any backup
 // storage) through the Proxmox VE API — the panel never talks to PBS directly
@@ -188,8 +189,10 @@ export async function backupInfo(row, guest) {
     max,
     used: backups.filter((b) => b.kind !== 'provider').length,
     fileRestore: type === 'pbs',
-    restore: ['qemu', 'lxc'].includes(guest.type),
-    schedulesAllowed: s.schedules,
+    restore: !computeManaged(row.vmid) && ['qemu', 'lxc'].includes(guest.type),
+    canCreate: backupServiceSelected(row.customer_id, row.vmid),
+    storageUsage: backupUsage(row.customer_id),
+    schedulesAllowed: s.schedules && backupServiceSelected(row.customer_id, row.vmid),
     schedule: s.schedules ? presentSchedule(schedule) : null,
     job: presentJob((activeJobFor.get(row.vmid)?.customer_id===row.customer_id ? activeJobFor.get(row.vmid) : null) ?? lastJob.get(row.vmid, row.customer_id)),
     backups,
@@ -205,6 +208,7 @@ function busyCheck(vmid) {
 
 function insertJob(row, action, kind, options = null,actorId=row.user_id) {
   busyCheck(row.vmid); // again, right before queuing: no await between this check and the insert
+  if (action === 'backup') options = { ...options, storage: backupSettings().storage };
   const r = db.prepare(`
     INSERT INTO backup_jobs (vmid, user_id, action, kind, options, state, step, customer_id)
     VALUES (?, ?, ?, ?, ?, 'queued', 'Waiting for other backups to finish', ?)
@@ -215,6 +219,8 @@ function insertJob(row, action, kind, options = null,actorId=row.user_id) {
 }
 
 export async function startBackup(req, row, guest) {
+  requireBackupService(row.customer_id, row.vmid);
+  if (row.state !== 'ready') throw new BackupError(409, 'Wait until the server is ready before backing it up');
   if (!backupsAvailableFor(row.user_id,row.customer_id)) throw new BackupError(403, 'Backups are not available for your account');
   busyCheck(row.vmid);
   const list = await visibleBackups(row, guest);
@@ -303,6 +309,11 @@ export async function deleteBackup(req, row, guest, volid) {
 async function removeVolume(node, storage, volid) {
   const upid = await pve.del(`${contentPath(node, storage)}/${encodeURIComponent(volid)}`);
   await waitTask(node, upid, 600_000);
+  if (trackedBackup(volid)) {
+    const remaining = await pve.get(contentPath(node, storage), { content: 'backup' });
+    if (remaining.some(b => b.volid === volid)) throw new BackupError(409, 'Backup deletion could not be verified');
+    releaseBackupVolume(volid);
+  }
   db.prepare('DELETE FROM backups WHERE volid = ?').run(volid);
 }
 
@@ -322,12 +333,13 @@ export function nextRun(s, from = Date.now()) {
 
 export function setSchedule(req, row, input) {
   const s = backupSettings();
-  if (!backupsAvailableFor(row.user_id,row.customer_id) || !s.schedules) throw new BackupError(403, 'Automatic backups are not available for your account');
   if (input.frequency === 'off') {
     db.prepare('DELETE FROM backup_schedules WHERE vmid = ?').run(row.vmid);
     audit(req, row.vmid, 'backup_schedule', { frequency: 'off' });
     return null;
   }
+  requireBackupService(row.customer_id, row.vmid);
+  if (!backupsAvailableFor(row.user_id,row.customer_id) || !s.schedules) throw new BackupError(403, 'Automatic backups are not available for your account');
   const max = maxBackupsFor(row.user_id,row.customer_id);
   if (input.keep > max) throw new BackupError(400, `Keep at most ${max} backups`);
   if (input.frequency === 'weekly' && !Number.isInteger(input.weekday)) throw new BackupError(400, 'Choose the day of the week');
@@ -354,7 +366,7 @@ async function schedulerTick(log) {
     const advance = (error = null) => db.prepare('UPDATE backup_schedules SET next_run_at = ?, last_run_at = ?, last_error = COALESCE(?, last_error) WHERE vmid = ?')
       .run(nextRun(sch), new Date().toISOString(), error, sch.vmid);
     if (sch.owner !== sch.customer_id) { db.prepare('DELETE FROM backup_schedules WHERE vmid = ?').run(sch.vmid); continue; }
-    if (!s.schedules || !backupsAvailableFor(sch.user_id,sch.customer_id) || sch.vm_state !== 'ready') { advance(); continue; }
+    if (!s.schedules || !backupsAvailableFor(sch.user_id,sch.customer_id) || !backupServiceSelected(sch.customer_id, sch.vmid) || sch.vm_state !== 'ready') { advance(); continue; }
     if (activeJobFor.get(sch.vmid)) { advance('Skipped: another backup or restore was running'); continue; }
     advance();
     const row = db.prepare('SELECT * FROM vms WHERE vmid = ?').get(sch.vmid);
@@ -394,25 +406,31 @@ async function locate(vmid) {
 
 /** Runs vzdump and records the new backup; returns its volume ID. */
 async function backupNow(job, guest, kind, resumeUpid = null) {
-  const s = backupSettings();
+  const s = backupSettings(), prior = backupReservation(job.id);
+  if (prior?.state === 'retained' && prior.volid) return prior.volid;
+  const storage = prior?.storage ?? JSON.parse(job.options ?? '{}').storage ?? s.storage;
   const startedSec = Math.floor(Date.parse(job.started_at) / 1000) - 60;
-  let upid = resumeUpid;
+  let upid = resumeUpid, reservation = prior;
   if (!upid) {
+    const cfg = await pve.get(`${guestPath(guest)}/config`);
+    reservation = await reserveCatalogBackup(job, guest, storage, diskTotalGb(cfg));
     setJob(job.id, { state: 'running', step: kind === 'before-restore' ? 'Backing up the current state' : 'Backing up', node: guest.node });
     upid = await pve.post(`/nodes/${encodeURIComponent(guest.node)}/vzdump`, {
-      vmid: guest.vmid, storage: s.storage, mode: 'snapshot', remove: 0,
-      'notes-template': `PVE Panel: {{guestname}} (${kind})`,
+      vmid: guest.vmid, storage, mode: 'snapshot', remove: 0,
+      'notes-template': `PVE Panel: {{guestname}} (${kind})${reservation ? ` pve-panel-backup:${job.id}:` : ''}`,
     });
     setJob(job.id, { upid });
   }
-  await waitTask(guest.node, upid, TASK_TIMEOUT);
+  const taskNode = reservation?.node ?? (resumeUpid ? job.node : guest.node);
+  await waitTask(taskNode, upid, TASK_TIMEOUT);
   const known = new Set(db.prepare('SELECT volid FROM backups').all().map((b) => b.volid));
-  const items = await pve.get(contentPath(guest.node, s.storage), { content: 'backup', vmid: guest.vmid });
-  const fresh = items.filter((i) => Number(i.vmid) === guest.vmid && Number(i.ctime) >= startedSec && !known.has(i.volid))
+  const items = await pve.get(contentPath(taskNode, storage), { content: 'backup', vmid: guest.vmid });
+  const fresh = items.filter((i) => Number(i.vmid) === guest.vmid && Number(i.ctime) >= startedSec && (reservation ? String(i.notes ?? '').includes(`pve-panel-backup:${job.id}:`) : !known.has(i.volid)))
     .sort((a, b) => Number(b.ctime) - Number(a.ctime))[0];
-  if (!fresh) throw new Error('The backup finished, but it can\'t be found on the backup storage');
+  if (!fresh) throw new Error('The backup finished, but it cannot be found on the backup storage');
   db.prepare('INSERT OR IGNORE INTO backups (volid, vmid, user_id, storage, kind, customer_id) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(fresh.volid, guest.vmid, job.user_id, s.storage, kind,job.customer_id);
+    .run(fresh.volid, guest.vmid, job.user_id, storage, kind,job.customer_id);
+  if (reservation) retainBackup(job.id, fresh.volid, Number(fresh.size));
   return fresh.volid;
 }
 
@@ -420,11 +438,11 @@ async function backupNow(job, guest, kind, resumeUpid = null) {
 async function rotate(job, guest) {
   const sch = db.prepare('SELECT keep FROM backup_schedules WHERE vmid = ?').get(job.vmid);
   if (!sch) return;
-  const s = backupSettings();
+  const storage = backupReservation(job.id)?.storage ?? JSON.parse(job.options ?? '{}').storage ?? backupSettings().storage;
   const auto = db.prepare("SELECT volid FROM backups WHERE vmid = ? AND customer_id = ? AND storage = ? AND kind = 'scheduled' ORDER BY created_at DESC, volid DESC")
-    .all(job.vmid, job.customer_id, s.storage);
+    .all(job.vmid, job.customer_id, storage);
   for (const old of auto.slice(sch.keep)) {
-    try { await removeVolume(guest.node, s.storage, old.volid); } catch (err) { logger?.warn(`Rotating ${old.volid}: ${err.message}`); }
+    try { await removeVolume(guest.node, storage, old.volid); } catch (err) { logger?.warn(`Rotating ${old.volid}: ${err.message}`); }
   }
 }
 

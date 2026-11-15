@@ -1,3 +1,4 @@
+import { backupDiskHoldsGb } from './compute-backups.js';
 import { db } from './db.js';
 import { config } from './config.js';
 import { pve, clusterGuests, guestPath } from './pve.js';
@@ -76,7 +77,7 @@ export async function selectPlacement({ offering, template, sourceConfig, pool, 
       const storageKey = storage?.shared ? `shared/${storage.storage}` : `${template.node}/${storage?.storage}`;
       const diskGb = offering.diskGb + 1;
       const held = holds.filter(h => h.storage_key === storageKey && h.state === 'held').reduce((n,h) => n+h.disk_gb,0);
-      if (!storage || storage.active !== true || storage.enabled === false || !storage.content.includes('images') || storage.availableBytes == null || storage.availableBytes / 2**30 < diskGb + held + catalog.reserves.diskGb || sourceNode.status !== 'online' || maintenance.has(template.node)) errors.push('Local template staging capacity is unavailable.');
+      if (!storage || storage.active !== true || storage.enabled === false || !storage.content.includes('images') || storage.availableBytes == null || storage.availableBytes / 2**30 < diskGb + held + backupDiskHoldsGb(storageKey) + catalog.reserves.diskGb || sourceNode.status !== 'online' || maintenance.has(template.node)) errors.push('Local template staging capacity is unavailable.');
       else if (grant && !grant.clone.storages.includes(storage.storage)) errors.push('Staging storage is outside the clone permission set.');
       else {
         staging = { storage: storage.storage, storageKey, diskGb };
@@ -109,7 +110,7 @@ export async function selectPlacement({ offering, template, sourceConfig, pool, 
     if (node?.cores != null && used.cores + offering.cores > node.cores) errors.push('Allocated vCPUs leave insufficient reservation capacity.');
     const storageKey = storage?.shared ? `shared/${candidate.storage}` : `${candidate.node}/${candidate.storage}`;
     const diskHolds = holds.filter((h) => h.storage_key === storageKey && (h.state === 'held' || !guests.has(h.vmid))).reduce((n, h) => n + h.disk_gb, 0);
-    if (storage?.availableBytes != null && offering.diskGb + diskHolds + catalog.reserves.diskGb > storage.availableBytes / 2 ** 30) errors.push('Pending disk reservations leave insufficient free capacity.');
+    if (storage?.availableBytes != null && offering.diskGb + diskHolds + backupDiskHoldsGb(storageKey) + catalog.reserves.diskGb > storage.availableBytes / 2 ** 30) errors.push('Pending disk reservations leave insufficient free capacity.');
     if (!errors.length) {
       try {
         await requirePrivileges(`/storage/${candidate.storage}`, ['Datastore.AllocateSpace', 'Datastore.Audit']);
