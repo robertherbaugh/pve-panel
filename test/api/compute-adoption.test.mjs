@@ -44,6 +44,12 @@ test('adoption rejects mismatched networks, extra disks, native HA and unavailab
   cfg.scsi1 = 'VMStorage:vm-101-disk-1,size=10G'; assert.equal((await adopt()).status, 409); delete cfg.scsi1;
   stack.mock.cluster.haResources = [{ sid: 'vm:101', state: 'stopped' }]; assert.equal((await adopt()).status, 409); stack.mock.cluster.haResources = [];
   stack.mock.cluster.nodes[0].maxcpu = 1; assert.equal((await adopt()).status, 409); stack.mock.cluster.nodes[0].maxcpu = 64;
+  Object.defineProperty(stack.mock.cluster, 'networks', { configurable: true, get() {
+    sql.prepare('UPDATE customers SET revision=revision+1 WHERE id=?').run(customerId);
+    return [{ iface: 'vmbr0', active: 1 }];
+  } });
+  try { assert.equal((await adopt()).status, 409, 'customer changes during placement must prevent adoption'); }
+  finally { delete stack.mock.cluster.networks; }
   assert.equal(sql.prepare('SELECT created_by_customer FROM vms WHERE vmid=101').get().created_by_customer, 0);
 });
 test('adoption atomically records existing resources and grants lifecycle control without changing the guest', async () => {

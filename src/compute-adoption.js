@@ -12,6 +12,7 @@ import { customerUsage } from './provision.js';
 import { activeRun } from './winupdate.js';
 
 const fail = (message, statusCode = 409) => { throw Object.assign(new Error(message), { statusCode }); };
+const vmBusy = vmid => activeRun(vmid) || db.prepare("SELECT 1 FROM backup_jobs WHERE vmid=? AND state IN ('queued','running')").get(vmid);
 export async function adoptionCandidates() {
   const guests = await clusterGuests(true);
   return db.prepare('SELECT vmid,customer_id FROM vms WHERE state=\'ready\'').all().flatMap(row => {
@@ -33,8 +34,7 @@ export async function adoptCompute(req, vmid, input) {
       if (!row || row.state !== 'ready') fail('Assign this VM to the customer before adopting it');
       assertComputeIdle(vmid);
       if (computeManaged(vmid)) fail('This VM already has a catalog allocation');
-      if (db.prepare("SELECT 1 FROM backup_jobs WHERE vmid=? AND state IN ('queued','running')").get(vmid)
-        || activeRun(vmid)) fail('Wait until the VM’s current operation finishes');
+      if (vmBusy(vmid)) fail('Wait until the VM’s current operation finishes');
       const guest = (await clusterGuests(true)).get(vmid);
       if (!guest || guest.type !== 'qemu' || guest.template || vmid === config.vpn.gatewayVmid || guest.status !== 'stopped') fail('Adoption requires a stopped, assigned VM');
       if (input.confirmName !== guest.name) fail('Type the VM’s current name to confirm adoption', 400);
@@ -64,7 +64,8 @@ export async function adoptCompute(req, vmid, input) {
       checkOfferingRevision(customer.id, offering);
       const current = (await clusterGuests(true)).get(vmid), currentCfg = await pve.get(`${path}/config`);
       const latest = db.prepare('SELECT * FROM vms WHERE vmid=?').get(vmid);
-      if (!customerById(customer.id)?.enabled || latest?.customer_id !== customer.id || latest.state !== 'ready' || latest.spec !== row.spec || current?.node !== guest.node || current?.status !== 'stopped' || currentCfg.digest !== cfg.digest || JSON.stringify(currentCfg) !== JSON.stringify(cfg)) fail('The VM changed during validation. Reload before adopting.');
+      const currentCustomer = customerById(customer.id);
+      if (!currentCustomer?.enabled || currentCustomer.revision !== customer.revision || latest?.customer_id !== customer.id || latest.state !== 'ready' || latest.spec !== row.spec || current?.node !== guest.node || current?.status !== 'stopped' || currentCfg.digest !== cfg.digest || JSON.stringify(currentCfg) !== JSON.stringify(cfg) || vmBusy(vmid)) fail('The VM or customer changed during validation. Reload before adopting.');
       assertComputeIdle(vmid);
       checkOfferingRevision(customer.id, offering);
       const id = randomUUID();
