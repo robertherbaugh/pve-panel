@@ -1,4 +1,5 @@
 import { resourcePicker } from './resource-picker.js';
+import { icon } from '../shared/icons.js';
 
 export function renderCustomers(host, { data, users, api, esc, toast, fail, confirmAction, onSave }) {
   let customers = data.customers,
@@ -17,7 +18,7 @@ export function renderCustomers(host, { data, users, api, esc, toast, fail, conf
     `<label>${label}<input name="${name}" value="${esc(value ?? '')}" ${attrs}></label>`;
   function render() {
     host.innerHTML = `<div class="section-head"><div><h2 class="h2">Customers</h2><p class="muted">Each customer has its own users, resources and limits. Users may belong to several customers.</p></div><button class="btn primary" data-add-customer>Add customer</button></div>
-      <div class="table-wrap"><table class="table"><thead><tr><th>Customer</th><th>Resource pools</th><th>Membership</th><th>Users</th><th>Status</th><th>Actions</th></tr></thead><tbody>${customers.map((c) => `<tr data-customer="${c.id}"><td><strong>${esc(c.name)}</strong><span class="muted small access-block">${esc(c.slug)}${c.legacy ? ' · migrated personal customer' : ''}</span></td><td>${c.pools.length ? c.pools.map((p) => `<span class="badge">${esc(p)}</span>`).join(' ') : '<span class="muted">Explicit VM assignments</span>'}</td><td>${c.sso.groups.length || c.sso.entitlements.length ? 'SSO mapping' : 'Manual membership'}${c.allowedDomains.length ? `<span class="muted small access-block">${esc(c.allowedDomains.join(', '))}</span>` : ''}</td><td>${c.members}</td><td><span class="pill ${c.enabled ? 'pill-running' : ''}">${c.enabled ? 'Enabled' : 'Disabled'}</span></td><td class="actions"><button class="btn" data-members>Members</button><button class="btn" data-edit-customer>Edit</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No customers yet.</td></tr>'}</tbody></table></div>
+      <div class="table-wrap"><table class="table"><thead><tr><th>Customer</th><th>Resource pools</th><th>Membership</th><th>Users</th><th>Status</th><th>Actions</th></tr></thead><tbody>${customers.map((c) => `<tr data-customer="${c.id}"><td><strong>${esc(c.name)}</strong><span class="muted small access-block">${esc(c.slug)}${c.legacy ? ' · migrated personal customer' : ''}</span></td><td>${c.pools.length ? c.pools.map((p) => `<span class="badge">${esc(p)}</span>`).join(' ') : '<span class="muted">Explicit VM assignments</span>'}</td><td>${c.sso.groups.length || c.sso.entitlements.length ? 'SSO mapping' : 'Manual membership'}${c.allowedDomains.length ? `<span class="muted small access-block">${esc(c.allowedDomains.join(', '))}</span>` : ''}</td><td>${c.members}</td><td><span class="pill ${c.enabled ? 'pill-running' : ''}">${c.enabled ? 'Enabled' : 'Disabled'}</span></td><td class="actions"><button class="btn" data-members>Members</button><button class="btn" data-edit-customer>Edit</button><button class="btn danger" data-delete-customer>Delete</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No customers yet.</td></tr>'}</tbody></table></div>
       <p class="muted small">A pool can belong to one customer. SSO mappings establish membership; permission sets grant operations inside that customer. Domains alone never grant membership.</p>`;
     host.querySelector('[data-add-customer]').onclick = () => edit();
     host
@@ -26,6 +27,9 @@ export function renderCustomers(host, { data, users, api, esc, toast, fail, conf
         (b) =>
           (b.onclick = () => edit(customers.find((c) => c.id === Number(b.closest('tr').dataset.customer)))),
       );
+    host.querySelectorAll('[data-delete-customer]').forEach((b) => {
+      b.onclick = () => remove(customers.find((c) => c.id === Number(b.closest('tr').dataset.customer)));
+    });
     host
       .querySelectorAll('[data-members]')
       .forEach(
@@ -65,7 +69,7 @@ export function renderCustomers(host, { data, users, api, esc, toast, fail, conf
     d.innerHTML = `<form class="settings access-editor"><div class="section-head"><h2>${title}</h2><button type="button" class="btn" data-close>Close</button></div>
       <div class="grid-2">${field('name', 'Customer name', c?.name, 'required maxlength="100"')}${field('slug', 'Customer ID', c?.slug, 'required pattern="[a-z0-9][a-z0-9-]{0,63}" maxlength="64"')}</div>
       <label class="check"><input name="enabled" type="checkbox" ${!c || c.enabled ? 'checked' : ''}>Customer enabled</label>
-      <fieldset><legend>Resource boundary</legend><div data-pools></div><p class="hint">Only these Proxmox pools belong to this customer. Empty means access is limited to VMs explicitly assigned to the customer. A permission set can narrow this boundary.</p><p class="muted small" data-inventory>Loading Proxmox pools…</p></fieldset>
+      <fieldset><legend>Resource boundary</legend><div data-pools></div><p class="hint">Only these Proxmox pools belong to this customer. Empty means access is limited to VMs explicitly assigned to the customer. A permission set can narrow this boundary.</p><p class="hint">Pool choices come from Proxmox using the panel’s API token. Missing pools need Pool.Audit permission on that token.</p><p class="muted small" data-inventory>Loading Proxmox pools…</p></fieldset>
       <fieldset><legend>SSO membership</legend><div class="grid-2">${field('groups', 'OIDC groups', s.groups.join(', '))}${field('entitlements', 'Application entitlements', s.entitlements.join(', '))}</div>
         <p class="hint">Exact values, separated by commas. A matching trusted claim adds the user as a member with no VM operations until a permission set grants them.</p>
         <label>Membership matching<select name="match"><option value="any" ${s.match === 'any' ? 'selected' : ''}>Group OR entitlement</option><option value="all" ${s.match === 'all' ? 'selected' : ''}>Group AND entitlement</option></select></label>
@@ -165,6 +169,74 @@ export function renderCustomers(host, { data, users, api, esc, toast, fail, conf
       if (d.isConnected)
         f.querySelector('[data-inventory]').textContent =
           `Pool inventory unavailable. Existing selections are preserved. ${err.message}`;
+    }
+  }
+  async function remove(c) {
+    const d = open(`Delete customer ${c.name}`);
+    d.innerHTML = `<form class="settings access-editor"><div class="section-head"><h2>Delete customer ${esc(c.name)}</h2><button type="button" class="btn" data-close>Close</button></div>
+      <p>This removes the customer from the panel. Its memberships, permission sets and pool mappings will be removed. You cannot undo this action.</p>
+      <p>User accounts, Proxmox guests and pools, and operation history are preserved.</p>
+      <div data-plan><p class="muted">Checking customer resources…</p></div>
+      <div class="customer-delete-confirmation"><p class="customer-delete-instruction" data-confirmation-prompt>Loading confirmation…</p><input name="confirmation" aria-label="Customer name confirmation" placeholder="Enter confirmation" autocomplete="off" required disabled></div>
+      <p class="form-error" data-error role="alert"></p><div class="row end"><button type="button" class="btn" data-cancel>Cancel</button><button class="btn danger" data-confirm-delete disabled>Delete customer</button></div></form>`;
+    const f = d.querySelector('form'),
+      input = f.elements.confirmation,
+      button = f.querySelector('[data-confirm-delete]');
+    let plan = null;
+    d.querySelector('[data-close]').onclick = d.querySelector('[data-cancel]').onclick = () => d.close();
+    input.oninput = () => {
+      button.disabled = input.value !== plan?.name;
+    };
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      if (!plan || plan.blockers.length || input.value !== plan.name || button.disabled) return;
+      button.disabled = true;
+      input.disabled = true;
+      try {
+        await api(`/api/admin/customers/${c.id}`, { method: 'DELETE', body: { revision: plan.revision } });
+        d.close();
+        toast('Customer deleted');
+        await reload();
+      } catch (err) {
+        if (d.isConnected) {
+          f.querySelector('[data-error]').textContent = err.message;
+          input.disabled = false;
+          button.disabled = false;
+        }
+        fail(err);
+      }
+    };
+    d.showModal();
+    try {
+      plan = await api(`/api/admin/customers/${c.id}/deletion`);
+      if (!d.isConnected) return;
+      d.setAttribute('aria-label', `Delete customer ${plan.name}`);
+      d.querySelector('h2').textContent = `Delete customer ${plan.name}`;
+      f.querySelector('[data-confirmation-prompt]').innerHTML = `Type <button type="button" class="btn ghost customer-confirmation-copy" data-copy-name aria-label="Copy customer name" title="Copy customer name">${icon('copy', { size: 18 })}<span data-confirmation-name>${esc(plan.name)}</span></button> to confirm.`;
+      const copy = f.querySelector('[data-copy-name]');
+      copy.onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(plan.name);
+          copy.innerHTML = `${icon('check', { size: 18 })}<span data-confirmation-name>${esc(plan.name)}</span>`;
+          copy.setAttribute('aria-label', 'Customer name copied');
+          copy.title = 'Copied';
+        } catch {
+          const range = document.createRange();
+          range.selectNodeContents(copy.querySelector('[data-confirmation-name]'));
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          f.querySelector('[data-error]').textContent = 'Copy is unavailable. The customer name is selected for manual copying.';
+        }
+      };
+      f.querySelector('[data-plan]').innerHTML = `<p>Customer ID: <strong>${esc(plan.slug)}</strong></p>
+        <ul><li>${plan.members} user membership${plan.members === 1 ? '' : 's'}</li><li>${plan.rules.length} permission set${plan.rules.length === 1 ? '' : 's'}</li><li>${plan.pools.length} pool mapping${plan.pools.length === 1 ? '' : 's'}</li></ul>
+        ${plan.blockers.length ? `<p role="alert">Move or remove these resources and wait for active jobs before deleting this customer:</p><ul>${plan.blockers.map((b) => `<li>${esc(b.label)}: ${b.count}</li>`).join('')}</ul>` : '<p>No assigned resources or active jobs block deletion.</p>'}`;
+      input.disabled = plan.blockers.length > 0;
+      if (!input.disabled) input.focus();
+    } catch (err) {
+      if (d.isConnected) f.querySelector('[data-error]').textContent = err.message;
+      fail(err);
     }
   }
   async function members(c) {

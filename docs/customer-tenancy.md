@@ -63,12 +63,36 @@ Disabling a customer blocks all customer access without deleting resources.
 Open consoles recheck identity, membership and permission grants every five
 seconds, and OIDC-backed consoles also close when their authorization expires.
 
+## Delete a customer
+
+A platform administrator can select **Delete** in the Customers table.
+The dialog lists the memberships, permission sets and pool mappings that deletion removes.
+Type the customer name to confirm, or use the adjacent copy button and paste the name.
+User accounts and Proxmox guests and pools remain intact.
+
+Assigned VMs, private networks, VPN devices, Tailscale connections, backups and
+backup schedules block deletion. Move or remove those resources first.
+Wait for active provisioning, backup, restore and Windows update jobs to finish.
+The panel checks these conditions again when you confirm deletion.
+
+The deleted customer disappears from administration and customer selection.
+Its SSO mappings cannot grant access again. Its former slug and pools become
+available for another customer. Historical records and an internal deletion record
+retain the original customer ID. The panel never reuses that ID, so an old customer
+selection cannot select a replacement customer. Deleting a migrated personal
+customer does not recreate it when the user next signs in.
+
 ## Resource boundaries and permissions
 
 Configure exact Proxmox pool IDs on each customer. A pool belongs to one customer,
 even if that customer is disabled. An empty pool selection allows only VMs
 explicitly assigned to that customer in the Servers tab. Templates and the VPN
 gateway are excluded from normal customer resource discovery.
+
+Pool choices come directly from Proxmox and include only pools visible to the
+panel's API token. They are not limited to pools configured through IaC.
+Grant the service account `Pool.Audit` on additional pools to include them.
+VM operations still require their own Proxmox privileges and customer permissions.
 
 A permission set belongs to one customer. Its resource pools must be a subset
 of that customer's pools. Optional exact tags and VM IDs narrow the selection.

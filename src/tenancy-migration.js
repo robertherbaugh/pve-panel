@@ -35,6 +35,7 @@ export function migrateTenancy(db) {
     PRIMARY KEY(customer_id,user_id)
   );`);
   for (const [name, type] of Object.entries({
+    deleted_at: 'TEXT',
     expiry_mode: 'TEXT',
     expiry_days: 'INTEGER',
     expiry_date: 'TEXT',

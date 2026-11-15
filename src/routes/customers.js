@@ -11,6 +11,8 @@ import {
   customerMembers,
   setMembership,
   removeMembership,
+  customerDeletionPlan,
+  deleteCustomer,
 } from '../tenancy.js';
 
 const memberBody = {
@@ -44,6 +46,26 @@ export async function adminCustomerRoutes(app) {
     });
     return customer;
   });
+  app.get('/api/admin/customers/:id/deletion', async (req) =>
+    customerDeletionPlan(Number(req.params.id)),
+  );
+  app.delete(
+    '/api/admin/customers/:id',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['revision'],
+          additionalProperties: false,
+          properties: { revision: { type: 'integer', minimum: 1 } },
+        },
+      },
+    },
+    async (req, reply) => {
+      deleteCustomer(req, Number(req.params.id), req.body.revision);
+      return reply.code(204).send();
+    },
+  );
   app.get('/api/admin/customers/:id/members', async (req, reply) => {
     const customer = customerById(Number(req.params.id));
     if (!customer) return reply.code(404).send({ error: 'Customer not found' });
