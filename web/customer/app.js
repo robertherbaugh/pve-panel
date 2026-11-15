@@ -36,6 +36,8 @@ const state = {
   busy: new Set(),       // vmids with a running task
 };
 
+const can = (action, vm = state.detail) => vm?.permissions?.includes(action) ?? false;
+
 // ---------- sign-in --------------------------------------------------------
 function resetLogin() {
   const box = $('#login-2fa');
@@ -110,7 +112,16 @@ $('#logout').addEventListener('click', async () => {
 
 // ---------- server list ----------------------------------------------------
 async function loadList() {
-  state.vms = await api('/api/vms');
+  [state.vms, state.account] = await Promise.all([api('/api/vms'), api('/api/account')]);
+  let banner = $('#authorization-notice');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'authorization-notice';
+    banner.className = 'notice warn';
+    $('#detail').before(banner);
+  }
+  banner.hidden = !state.account.authorization?.refreshRequired;
+  banner.innerHTML = banner.hidden ? '' : '<p>Your shared access needs a fresh sign-in. <a href="/api/auth/oidc/start">Sign in again</a> to refresh your permissions.</p>';
   renderList();
 }
 
@@ -319,10 +330,13 @@ function renderDetail() {
     vm.cores ? `${vm.cores} ${vm.cores === 1 ? 'core' : 'cores'}` : null,
     vm.memoryMb ? `${bytes(vm.memoryMb * 1024 * 1024)} memory` : null,
   ].filter(Boolean).join(', ');
-  const tabs = [['overview', 'Overview', 'chart'], ['snapshots', 'Snapshots', 'camera'], ['console', 'Console', 'terminal']];
-  if (state.account.tailscale && vm.type !== 'lxc') tabs.push(['remote', 'Remote access', 'link']);
-  if (state.account.backups) tabs.push(['backups', 'Backups', 'archive']);
-  if (vm.osFamily === 'windows') tabs.push(['updates', 'Updates', 'download']);
+  const tabs = [['overview', 'Overview', 'chart'], ['snapshots', 'Snapshots', 'camera']];
+  if (can('console')) tabs.push(['console', 'Console', 'terminal']);
+  if (can('tailscale.read') && state.account.tailscale && vm.type !== 'lxc') tabs.push(['remote', 'Remote access', 'link']);
+  if (can('backup.read') && state.account.backups) tabs.push(['backups', 'Backups', 'archive']);
+  if (can('updates.read') && vm.osFamily === 'windows') tabs.push(['updates', 'Updates', 'download']);
+
+  if (!tabs.some(([id]) => id === state.tab)) state.tab = 'overview';
 
   $('#detail').innerHTML = `
     <div class="page">
@@ -334,10 +348,10 @@ function renderDetail() {
           <p class="state-line"><span class="pill pill-${st}">${statusText}</span><span class="muted">${esc(facts)}</span></p>
         </div>
         <div class="power" role="group" aria-label="Power">
-          <button class="btn primary" data-power="start" ${running || busy || vm.expiry?.expired ? 'disabled' : ''}>${icon('play')}<span>Start</span></button>
-          <button class="btn" data-power="shutdown" ${!running || busy ? 'disabled' : ''}>${icon('power')}<span>Shut down</span></button>
-          <button class="btn" data-power="reboot" ${!running || busy ? 'disabled' : ''}>${icon('restart')}<span>Restart</span></button>
-          <button class="btn danger" data-power="stop" ${!running || busy ? 'disabled' : ''}>${icon('stop')}<span>Force stop</span></button>
+          <button class="btn primary" data-power="start" ${!can('power', vm) || running || busy || vm.expiry?.expired ? 'disabled' : ''}>${icon('play')}<span>Start</span></button>
+          <button class="btn" data-power="shutdown" ${!can('power', vm) || !running || busy ? 'disabled' : ''}>${icon('power')}<span>Shut down</span></button>
+          <button class="btn" data-power="reboot" ${!can('power', vm) || !running || busy ? 'disabled' : ''}>${icon('restart')}<span>Restart</span></button>
+          <button class="btn danger" data-power="stop" ${!can('power', vm) || !running || busy ? 'disabled' : ''}>${icon('stop')}<span>Force stop</span></button>
         </div>
       </header>
       ${expiryBanner(vm)}
@@ -382,7 +396,7 @@ function renderOverview(body) {
         <p><strong>Size change waiting for a restart:</strong> ${esc(vm.pendingSize.cores)} ${vm.pendingSize.cores === 1 ? 'core' : 'cores'},
           ${esc(bytes(vm.pendingSize.memoryMb * 1024 * 1024))} memory. It takes effect when the server is restarted from this
           panel; a restart inside the server isn't enough.</p>
-        <button class="btn" data-power="reboot">${icon('restart')}<span>Restart now</span></button>
+        <button class="btn" data-power="reboot" ${can('power') ? '' : 'disabled'}>${icon('restart')}<span>Restart now</span></button>
       </div>` : ''}
     ${vm.resizable && state.account.canCreate ? `
       <div class="row size-row"><button class="btn" data-resize>${icon('server')}<span>Change size…</span></button></div>` : ''}
@@ -498,12 +512,12 @@ async function renderSnapshots(body) {
               <div class="mono">${esc(s.name)}</div>
               <div class="muted">${s.time ? new Date(s.time * 1000).toLocaleString() : ''}${s.includesRam ? ' – includes RAM' : ''}${s.description ? ` – ${esc(s.description)}` : ''}</div>
             </div>
-            <button class="btn" data-rollback="${esc(s.name)}" ${busy ? 'disabled' : ''}>Roll back</button>
-            <button class="btn danger" data-delsnap="${esc(s.name)}" ${busy ? 'disabled' : ''}>Delete</button>
+            <button class="btn" data-rollback="${esc(s.name)}" ${busy || !can('snapshot.rollback') ? 'disabled' : ''}>Roll back</button>
+            <button class="btn danger" data-delsnap="${esc(s.name)}" ${busy || !can('snapshot.delete') ? 'disabled' : ''}>Delete</button>
           </li>`).join('')}
       </ul>` : '<p class="muted">No snapshots yet. Take one before risky changes so you can return to this point.</p>'}
 
-    <form id="snap-form" class="snap-form">
+    <form id="snap-form" class="snap-form" ${can('snapshot.create') ? '' : 'hidden'}>
       <label>Name <input name="name" required pattern="[A-Za-z][A-Za-z0-9_\\-]{1,39}" placeholder="before-upgrade"></label>
       <label>Note <input name="description" maxlength="200" placeholder="Optional"></label>
       <button class="btn primary" ${busy ? 'disabled' : ''}>Take snapshot</button>
@@ -762,8 +776,13 @@ $('#detail').addEventListener('submit', (e) => {
 // ---------- create a server --------------------------------------------------
 const MEMORY_STEPS_MB = [512, 1024, 2048, 3072, 4096, 6144, 8192, 12288, 16384, 24576, 32768, 49152, 65536, 98304, 131072];
 
+function creationLimits() {
+  return state.account.cloneDestinations?.find((d) => d.id === state.createDestination)?.limits ?? state.account.limits;
+}
+
 function remaining() {
-  const { limits, usage } = state.account;
+  const { usage } = state.account;
+  const limits = creationLimits();
   return {
     servers: limits.servers - usage.servers,
     cores: limits.cores - usage.cores,
@@ -780,14 +799,19 @@ async function openCreate() {
   try {
     const [account, templates] = await Promise.all([api('/api/account'), api('/api/templates')]);
     state.account = account;
+    state.allTemplates = templates;
+    state.createDestination = account.personalCreation ? '' : account.cloneDestinations?.[0]?.id ?? '';
     state.templates = templates;
     if (state.view === 'create') renderCreate();
   } catch (err) { fail(err); }
 }
 
 function renderCreate() {
+  const destinations = state.account.cloneDestinations ?? [];
+  const destination = destinations.find((d) => d.id === state.createDestination);
+  state.templates = (state.allTemplates ?? state.templates).filter((t) => !destination || destination.templates.includes(t.id));
   const left = remaining();
-  const { limits } = state.account;
+  const limits = creationLimits();
   const gb = (mb) => `${+(mb / 1024).toFixed(1)} GB`;
   const minDisk = Math.min(...state.templates.map((t) => t.minDiskGb));
 
@@ -799,6 +823,12 @@ function renderCreate() {
 
   const head = `
     <div class="detail-head"><div><h1>New server</h1>
+      ${destinations.length ? `<label>Destination
+        <select id="clone-destination">
+          ${state.account.personalCreation ? '<option value="">Personal servers</option>' : ''}
+          ${destinations.map((d) => `<option value="${esc(d.id)}" ${d.id === state.createDestination ? 'selected' : ''}>${esc(d.name)} — ${esc(d.pool)}</option>`).join('')}
+        </select>
+      </label><p class="muted">Each destination has its own limits, applied to all servers you create.</p>` : ''}
       <p class="muted plan-line">Left in your plan: ${Math.max(0, left.servers)} of ${limits.servers} servers,
         ${Math.max(0, left.cores)} CPU cores, ${gb(Math.max(0, left.memoryMb))} memory, ${Math.max(0, left.diskGb)} GB disk.</p>
       ${state.account.networksEnabled ? `<p class="muted plan-line">${state.account.network
@@ -977,7 +1007,7 @@ async function renderUpdates(body) {
         ${r.state === 'restart-required' ? `
           <div class="notice warn update-restart">
             <p>Windows needs a restart to finish installing. The panel continues automatically after the restart.</p>
-            <button class="btn" data-power="reboot">${icon('restart')}<span>Restart now</span></button>
+            <button class="btn" data-power="reboot" ${can('power') ? '' : 'disabled'}>${icon('restart')}<span>Restart now</span></button>
           </div>` : `<p class="muted small">This can take 30 minutes or more. You can leave this page; the updates continue${r.autoRestart ? ', and the server restarts by itself when needed' : ''}.</p>`}
         ${r.installed?.length ? `<details class="update-details"><summary>Installed so far (${r.installed.length})</summary>${updateList(r.installed)}</details>` : ''}
       </div>`;
@@ -1001,7 +1031,7 @@ async function renderUpdates(body) {
       <p class="muted updates-lede">Install the latest updates from Microsoft. Feature upgrades to a new Windows version and preview updates are never installed.</p>
       ${last}
       ${running ? '' : '<div class="notice warn"><p>Start the server to install updates.</p></div>'}
-      <form id="update-form" class="update-form">
+      <form ${can('updates.run') ? '' : 'hidden'} id="update-form" class="update-form">
         <div class="choices" role="radiogroup" aria-label="Which updates">
           <label class="choice"><input type="radio" name="scope" value="security" checked>
             <span><strong>Security and critical updates</strong><span class="muted">Recommended. Includes the monthly cumulative update and Defender updates.</span></span></label>
@@ -1081,7 +1111,7 @@ async function renderBackups(body) {
           <h2>Backups</h2>
           <p class="muted small">A backup is a full copy of the server, kept outside it. ${b.used} of ${b.max} backups made by you are in use.</p>
         </div>
-        <button class="btn primary" data-backup-now ${working || !room ? 'disabled' : ''}>${icon('archive')}<span>Back up now</span></button>
+        <button class="btn primary" data-backup-now ${working || !room || !can('backup.create') ? 'disabled' : ''}>${icon('archive')}<span>Back up now</span></button>
       </div>
       ${b.error ? `<div class="notice warn"><p>${esc(b.error)}</p></div>` : ''}
       ${working ? `<div class="notice backup-progress"><p class="progress-step"><span class="spinner" aria-hidden="true"></span>
@@ -1102,13 +1132,13 @@ async function renderBackups(body) {
                   ${x.verified === 'failed' ? '<span class="tag warn">Verification failed</span>' : ''}</div>
                 <div class="muted small">${x.size ? esc(bytes(x.size)) : ''}${x.verified === 'ok' ? ' · verified' : ''}</div>
               </div>
-              ${b.fileRestore ? `<button class="btn" data-backup-browse ${working ? 'disabled' : ''}>${icon('folder', { size: 16 })}<span>Browse files</span></button>` : ''}
-              ${b.restore ? `<button class="btn" data-backup-restore ${working ? 'disabled' : ''}>Restore</button>` : ''}
-              ${x.deletable ? `<button class="btn danger" data-backup-delete ${working ? 'disabled' : ''}>Delete</button>` : ''}
+              ${b.fileRestore && can('backup.files') ? `<button class="btn" data-backup-browse ${working ? 'disabled' : ''}>${icon('folder', { size: 16 })}<span>Browse files</span></button>` : ''}
+              ${b.restore && can('backup.restore') ? `<button class="btn" data-backup-restore ${working ? 'disabled' : ''}>Restore</button>` : ''}
+              ${x.deletable && can('backup.delete') ? `<button class="btn danger" data-backup-delete ${working ? 'disabled' : ''}>Delete</button>` : ''}
             </li>`).join('')}
         </ul>` : '<p class="muted">No backups yet.</p>'}
 
-      ${b.schedulesAllowed ? `
+      ${b.schedulesAllowed && can('backup.schedule') ? `
         <form id="backup-schedule" class="schedule-form">
           <h3 class="small-head">Automatic backups</h3>
           <div class="schedule-grid">
@@ -1337,7 +1367,8 @@ async function openResize() {
 }
 
 function renderResize(vm) {
-  const { limits, usage } = state.account;
+  const { usage } = state.account;
+  const limits = vm.resizeLimits ?? state.account.limits;
   const gb = (mb) => `${+(mb / 1024).toFixed(1)} GB`;
   const windows = vm.osFamily === 'windows';
   // This server's configured size (a pending change counts; usage includes it)
@@ -1585,6 +1616,7 @@ async function submitCreate(form) {
   }
   const body = {
     templateId: tpl.id,
+    ...(state.createDestination ? { accessRuleId: state.createDestination } : {}),
     hostname: form.hostname.value.trim(),
     ...(tpl.setup === 'cloudinit' ? { username: form.username.value.trim() } : {}),
     cores: Number(form.cores.value),
@@ -1833,6 +1865,11 @@ $('#detail').addEventListener('click', (e) => {
 });
 
 $('#detail').addEventListener('change', (e) => {
+  if (e.target.id === 'clone-destination') {
+    state.createDestination = e.target.value;
+    renderCreate();
+    return;
+  }
   const reinstall = e.target.closest('#reinstall-form');
   if (reinstall && e.target.name === 'templateId') {
     const tpl = findTemplate(e.target.value);

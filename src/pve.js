@@ -18,9 +18,9 @@ export class PveError extends Error {
   }
 }
 
-async function request(method, path, params) {
+async function request(method, path, params, options = {}) {
   const url = new URL(`${config.pve.url}/api2/json${path}`);
-  const init = { method, headers: { Authorization: authHeader }, dispatcher };
+  const init = { method, headers: { Authorization: authHeader }, dispatcher, signal: options.signal };
 
   if (params) {
     const body = new URLSearchParams();
@@ -109,7 +109,7 @@ async function stream(path, params) {
 
 export const pve = {
   stream,
-  get: (path, params) => request('GET', path, params),
+  get: (path, params, options) => request('GET', path, params, options),
   post: (path, params) => request('POST', path, params),
   put: (path, params) => request('PUT', path, params),
   del: (path, params) => request('DELETE', path, params),

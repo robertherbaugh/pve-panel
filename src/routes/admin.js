@@ -24,6 +24,7 @@ import { containerImages, containerStorages, forgetImageCache } from '../contain
 import { networkOf, allNetworks } from '../network.js';
 import { adminOverview, removeDevice, syncGateway } from '../vpn.js';
 import { config } from '../config.js';
+import { accessPolicy, saveAccessPolicy, ACTIONS } from '../access.js';
 
 const PASSWORD = { type: 'string', minLength: 12, maxLength: 200 };
 
@@ -33,6 +34,12 @@ function badRequest(reply, error) {
 
 export default async function adminRoutes(app) {
   app.addHook('preHandler', app.requireAdmin);
+  app.get('/api/admin/access-policy', async () => ({ policy: accessPolicy(), actions: ACTIONS }));
+  app.put('/api/admin/access-policy', async (req) => {
+    const policy = saveAccessPolicy(req.body);
+    audit(req, null, 'admin_access_policy', { enabled: policy.enabled, rules: policy.rules.map((r) => r.id) });
+    return { policy, actions: ACTIONS };
+  });
 
   // ---- Users ------------------------------------------------------------
 

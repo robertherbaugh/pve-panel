@@ -137,6 +137,10 @@ export async function startStack({ env = {}, mail = false } = {}) {
     INITIAL_ADMIN_EMAIL: ADMIN.email,
     INITIAL_ADMIN_PASSWORD: ADMIN.password,
     UPDATE_CHECK: 'false',
+    ...(env.OIDC_ENABLED === 'true' ? {
+      PANEL_PUBLIC_URL: `http://127.0.0.1:${port}`,
+      ADMIN_PUBLIC_URL: `http://127.0.0.1:${adminPort}`,
+    } : {}),
     AGENT_UNRESPONSIVE_SECONDS: '15',
     ...env,
   };

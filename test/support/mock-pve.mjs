@@ -180,8 +180,13 @@ export async function startMockPve({ port = 0 } = {}) {
     const u = new URL(req.url, 'http://x'); const p = u.pathname.replace('/api2/json','');
     if (req.headers.authorization !== 'PVEAPIToken=panel@pve!panel=x') return send(res, null, 401);
     // like Proxmox: the pool of a guest is only shown with Pool.Audit on that pool
-    if (p === '/cluster/resources') return send(res, [...vms.values()].map(({cfg, pool, ...v}) => ({...v, ...(pool && 'Pool.Audit' in effective(`/pool/${pool}`) ? { pool } : {}), id:`${v.type}/${v.vmid}`, cpu:0.05, mem:v.maxmem/4, uptime: v.status==='running'?600:0})));
+    if (p === '/cluster/resources') return send(res, [...vms.values()].map(({cfg, pool, ...v}) => ({...v, tags: cfg?.tags ?? v.tags, ...(pool && 'Pool.Audit' in effective(`/pool/${pool}`) ? { pool } : {}), id:`${v.type}/${v.vmid}`, cpu:0.05, mem:v.maxmem/4, uptime: v.status==='running'?600:0})));
     if (p === '/version') return send(res, { version: '9.0.6', release: '9.0', repoid: 'mock' });
+    if (p.startsWith('/pools/')) {
+      const pool = decodeURIComponent(p.slice('/pools/'.length));
+      if (!('Pool.Audit' in effective(`/pool/${pool}`))) return send(res, null, 403, 'Pool.Audit required');
+      return send(res, { poolid: pool, members: [...vms.values()].filter((v) => v.pool === pool).map(({vmid,type}) => ({vmid,type})) });
+    }
     if (p === '/access/permissions') { const path = u.searchParams.get('path') ?? '/'; return send(res, { [path]: effective(path) }); }
     if (p === '/cluster/firewall/options') { if (!('Sys.Audit' in effective('/'))) return send(res, null, 403, 'Permission check failed (/, Sys.Audit)'); return send(res, cluster.firewall); }
     const sst = p.match(/^\/nodes\/[^/]+\/storage\/([^/]+)\/status$/);
@@ -273,7 +278,7 @@ export async function startMockPve({ port = 0 } = {}) {
       const [storage, size] = String(b.rootfs).split(':');
       const net0 = /hwaddr=/.test(b.net0) ? b.net0 : b.net0.replace(/^(name=eth0,bridge=[^,]+)/, `$1,hwaddr=${newMac()}`);
       const cfg = { arch: 'amd64', ostype: 'debian', hostname: b.hostname, cores: Number(b.cores), memory: Number(b.memory), swap: Number(b.swap),
-        rootfs: `${storage}:vm-${vmid}-disk-0,size=${size}G`, net0, unprivileged: 1, ...(b.features ? { features: b.features } : {}) };
+        rootfs: `${storage}:vm-${vmid}-disk-0,size=${size}G`, net0, unprivileged: 1, tags: b.tags ?? '', ...(b.features ? { features: b.features } : {}) };
       vms.set(vmid, { vmid, node: 'pve1', type: 'lxc', name: b.hostname, pool: b.pool, status: 'stopped', lock: 'create',
         maxcpu: Number(b.cores), maxmem: Number(b.memory) * 2 ** 20, maxdisk: Number(size) * 2 ** 30, cfg, ctPassword: b.password, ctKeys: b['ssh-public-keys'] });
       return send(res, task('vzcreate', vmid, 1500, () => { delete vms.get(vmid)?.lock; }));
@@ -442,6 +447,6 @@ export async function startMockPve({ port = 0 } = {}) {
     control: (p) => fetch(`http://127.0.0.1:${actualPort}/api2/json${p}`, {
       headers: { authorization: 'PVEAPIToken=panel@pve!panel=x' },
     }).then((r) => r.json()).then((j) => j.data),
-    close: () => new Promise((resolve) => { wss.close(); srv.closeAllConnections?.(); srv.close(() => resolve()); }),
+    close: () => new Promise((resolve) => { for (const client of wss.clients) client.terminate(); wss.close(); srv.closeAllConnections?.(); srv.close(() => resolve()); }),
   };
 }

@@ -66,6 +66,18 @@ addColumn('vms', 'state', "TEXT NOT NULL DEFAULT 'ready'");
 addColumn('vms', 'error', 'TEXT');
 addColumn('vms', 'created_by_customer', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('vms', 'spec', 'TEXT'); // JSON: requested { cores, memoryMb, diskGb }
+addColumn('vms', 'access_managed', 'INTEGER NOT NULL DEFAULT 0');
+db.exec(`
+  CREATE TABLE IF NOT EXISTS oidc_authorizations (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    issuer TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    claims TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS oidc_authorizations_expiry ON oidc_authorizations(expires_at);
+`);
 
 // Templates customers may create servers from
 db.exec(`

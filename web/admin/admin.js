@@ -2,6 +2,7 @@ import { icon } from '/shared/icons.js';
 import { renderSecurity } from '/shared/twofa.js';
 import { renderPasskeys } from '/shared/passkeys.js';
 import { applyScheme } from '/shared/icons.js';
+import { renderAccessPolicy } from './access-policy.js';
 
 // Administration area: assign servers, manage customers, read the activity log.
 // Receives the shared helpers from app.js so it behaves like the rest of the panel.
@@ -139,6 +140,8 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
           await runSetupCheck();
           return;
         }
+      } else if (st.tab === 'permissions') {
+        st.accessPolicy = await api('/api/admin/access-policy');
       } else if (st.tab === 'about') {
         st.about = await api(`/api/admin/about${st.refreshAbout ? '?refresh=1' : ''}`);
         st.refreshAbout = false;
@@ -163,7 +166,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
 
   // ---- shell ------------------------------------------------------------
   function render() {
-    const tabs = [['servers', 'Servers', 'server'], ['users', 'Customers', 'users'], ['templates', 'Templates', 'layers'], ['vpn', 'VPN', 'shield'],
+    const tabs = [['servers', 'Servers', 'server'], ['users', 'Customers', 'users'], ['permissions', 'Permissions', 'shield'], ['templates', 'Templates', 'layers'], ['vpn', 'VPN', 'shield'],
       ['activity', 'Activity', 'pulse'], ['account', 'Your account', 'user'], ['settings', 'Settings', 'gear'], ['setup', 'Setup check', 'check'], ['about', 'About', 'info']];
     const count = (id) => (id === 'setup' && st.setupProblems ? ` <span class="tab-count" title="Problems found">${st.setupProblems}</span>` : '');
     root.innerHTML = `
@@ -192,6 +195,7 @@ export function createAdmin({ root, api, toast, fail, confirmAction, promptText,
     if (st.tab === 'about') renderAbout();
     if (st.tab === 'setup') renderSetupCheck();
     if (st.tab === 'settings') renderSettings();
+    if (st.tab === 'permissions') renderAccessPolicy(root.querySelector('#admin-body'), { data: st.accessPolicy, api, esc, toast, fail });
     if (st.tab !== 'settings' && st.schemePreview) { st.schemePreview = null; applyScheme(st.appearance?.scheme); }
   }
 

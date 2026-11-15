@@ -52,6 +52,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
+    "jose": "^6.2.17",
     "mailparser": "^3.9.33",
     "smtp-server": "^3.19.16"
   }

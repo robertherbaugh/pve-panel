@@ -3,8 +3,7 @@ import WebSocket from 'ws';
 import { db, audit } from '../db.js';
 import { config } from '../config.js';
 import { pve, locateGuest, guestPath, authHeader, tlsOptions } from '../pve.js';
-
-const ownedByUser = db.prepare('SELECT * FROM vms WHERE vmid = ? AND user_id = ?');
+import { authorizedRow, authorizationFor } from '../access.js';
 
 // One-time console sessions. A session is created by the POST route and
 // consumed by the first websocket connection that presents its id.
@@ -23,8 +22,7 @@ export default async function consoleRoutes(app) {
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
   }, async (req, reply) => {
     const vmid = Number(req.params.vmid);
-    const row = Number.isInteger(vmid) ? ownedByUser.get(vmid, req.account.id) : null;
-    if (!row) return reply.code(404).send({ error: 'Server not found' });
+    const row = await authorizedRow(req, vmid, 'console');
     if (row.state !== 'ready') return reply.code(409).send({ error: 'This server is not ready yet' });
     const guest = await locateGuest(vmid);
     if (guest.status !== 'running') {
@@ -50,7 +48,7 @@ export default async function consoleRoutes(app) {
   app.get('/api/console/:session', {
     websocket: true,
     preHandler: app.authenticate,
-  }, (client, req) => {
+  }, async (client, req) => {
     const s = sessions.get(req.params.session);
     sessions.delete(req.params.session);
 
@@ -58,6 +56,11 @@ export default async function consoleRoutes(app) {
       client.close(4001, 'Console session expired');
       return;
     }
+    let row;
+    try { row = await authorizedRow(req, s.guest.vmid, 'console'); }
+    catch { client.close(4001, 'Console access expired'); return; }
+
+    if (client.readyState !== WebSocket.OPEN) return;
 
     const upstreamUrl = new URL(`${config.pve.url}${'/api2/json'}${guestPath(s.guest)}/vncwebsocket`);
     upstreamUrl.protocol = upstreamUrl.protocol === 'http:' ? 'ws:' : 'wss:';
@@ -84,12 +87,33 @@ export default async function consoleRoutes(app) {
       if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
     });
 
+    let timer;
+    let leaseTimer;
     const closeBoth = () => {
+      clearInterval(timer);
+      clearTimeout(leaseTimer);
       if (client.readyState === WebSocket.OPEN) client.close();
       if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) {
         upstream.terminate();
       }
     };
+    let checking = false;
+    timer = setInterval(async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const user = db.prepare('SELECT deleting FROM users WHERE id=?').get(req.account.id);
+        if (!user || user.deleting) throw new Error('Account revoked');
+        await authorizedRow(req, s.guest.vmid, 'console');
+      } catch { closeBoth(); }
+      finally { checking = false; }
+    }, 5000);
+    timer.unref();
+    if (row.access_managed || row.user_id !== req.account.id) {
+      const expires = authorizationFor(req)?.expiresAt ?? 0;
+      leaseTimer = setTimeout(closeBoth, Math.max(0, expires * 1000 - Date.now()));
+      leaseTimer.unref();
+    }
     upstream.on('close', closeBoth);
     upstream.on('error', (err) => {
       req.log.warn({ err, vmid: s.guest.vmid }, 'console upstream error');

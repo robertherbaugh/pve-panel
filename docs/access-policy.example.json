@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "enabled": false,
+  "allowedDomains": ["example.com"],
+  "rules": [
+    {
+      "id": "development",
+      "name": "Development",
+      "groups": ["developers"],
+      "entitlements": ["development:operate"],
+      "match": "any",
+      "pools": ["development"],
+      "tags": [],
+      "vmids": [],
+      "actions": ["view", "power", "console", "snapshot.create", "snapshot.delete", "snapshot.rollback", "clone"],
+      "clone": {
+        "pool": "development",
+        "templates": [9000],
+        "storages": ["local-lvm"],
+        "limits": { "servers": 2, "cores": 8, "memoryMb": 8192, "diskGb": 100 }
+      }
+    }
+  ]
+}
