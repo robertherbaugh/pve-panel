@@ -9,6 +9,9 @@ test('an administrator saves database branding and uploads, replaces and removes
     buffer: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="18" fill="${color}"/></svg>`) });
   try {
     await admin.goto(stack.adminUrl);
+    await customer.goto(stack.customerUrl);
+    const originalAdminIcon = await admin.locator('link[rel=icon]').first().getAttribute('href');
+    const originalCustomerIcon = await customer.locator('link[rel=icon]').first().getAttribute('href');
     await admin.locator('#login-form [name=email]').fill('admin@example.com');
     await admin.locator('#login-form [name=password]').fill('correct-horse-battery');
     await admin.locator('#login-form button[type=submit]').click();
@@ -39,10 +42,10 @@ test('an administrator saves database branding and uploads, replaces and removes
     await editor.getByRole('button', { name: 'Remove logo', exact: true }).click();
     await admin.locator('#confirm-ok').click();
     await expect(logo).toHaveCount(0);
-    await expect(admin.locator('link[rel=icon]').first()).toHaveAttribute('href', '/shared/favicon.svg');
+    await expect(admin.locator('link[rel=icon]').first()).toHaveAttribute('href', originalAdminIcon);
     await customer.reload();
     await expect(customer.locator('#login-view [data-brand-mark] svg').first()).toBeVisible();
-    await expect(customer.locator('link[rel=icon]').first()).toHaveAttribute('href', '/shared/favicon.svg');
+    await expect(customer.locator('link[rel=icon]').first()).toHaveAttribute('href', originalCustomerIcon);
   } finally {
     await admin.close(); await customer.close(); await stack.stop();
   }
