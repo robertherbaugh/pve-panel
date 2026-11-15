@@ -110,7 +110,7 @@ function summarize(row, guest) {
     error: row.state === 'failed' ? row.error : null,
     progress: row.state === 'creating' ? row.progress : null,
     deletable: !!row.created_by_customer,
-    reinstallable: !!row.created_by_customer && !computeManaged(row.vmid),
+    reinstallable: !!row.created_by_customer,
     catalogManaged: computeManaged(row.vmid),
     expiry: expiryInfo(row, expirySettings()),
     name: row.label || guest?.name || (row.spec && JSON.parse(row.spec).hostname) || `Server ${row.vmid}`,
@@ -171,7 +171,7 @@ export default async function vmRoutes(app) {
       const permissions = await capabilities(req, row, guests.get(row.vmid));
       return { ...summarize(row, guests.get(row.vmid)), permissions,
         deletable: !!row.created_by_customer && permissions.includes('delete'),
-        reinstallable: !!row.created_by_customer && !computeManaged(row.vmid) && permissions.includes('reinstall') };
+        reinstallable: !!row.created_by_customer && permissions.includes('reinstall') };
     }));
   });
 
@@ -497,7 +497,7 @@ export default async function vmRoutes(app) {
       resizeLimits: row.access_managed && permissions.includes('resize')
         ? cloneRules(req).find((r) => r.id === JSON.parse(row.spec ?? '{}').accessRuleId)?.clone.limits ?? null : null,
       deletable: !!row.created_by_customer && permissions.includes('delete'),
-      reinstallable: !!row.created_by_customer && !computeManaged(row.vmid) && permissions.includes('reinstall'),
+      reinstallable: !!row.created_by_customer && permissions.includes('reinstall'),
       os: cfg.ostype ?? null,          // raw Proxmox ostype, e.g. "win11", "l26"
       osFamily: osOf(row, cfg.ostype),  // 'windows' | 'linux' | null
       // for the reinstall form: current image and disk size

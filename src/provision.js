@@ -1,4 +1,4 @@
-import { runCatalogResize } from './compute-lifecycle.js';
+import { runCatalogResize, lifecycleStep, lifecycleGuest, lifecycleFailed } from './compute-lifecycle.js';
 import { resolveSshKeys } from './ssh-keys.js';
 import { db, audit } from './db.js';
 import { config } from './config.js';
@@ -397,7 +397,7 @@ async function finishCreate(actor, node, vmid, cloneUpid, spec, tplRow, net, {
       // the same DHCP address again; otherwise Proxmox assigns a new one.
       params.net0 = `${nicModel(cfg.net0)}${mac ? `=${mac}` : ''},bridge=${net.vnet},firewall=1`;
     } else if (mac && cfg.net0) {
-      params.net0 = cfg.net0.replace(/^(\w+)=([0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5})/, `$1=${mac}`);
+      params.net0 = (params.net0 ?? cfg.net0).replace(/^(\w+)=([0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5})/, `$1=${mac}`);
     }
     if (!windows) {
       params.ciuser = spec.username;
@@ -463,7 +463,7 @@ async function finishContainer(actor, node, vmid, createUpid, net, { done = 'ser
     audit(actor, vmid, done);
   } catch (err) {
     db.prepare("UPDATE vms SET state = 'failed', error = ?, progress = NULL WHERE vmid = ?")
-      .run(operationId ? 'Provisioning needs provider reconciliation' : String(err.message).slice(0, 500), vmid);
+      .run(String(err.message).slice(0, 500), vmid);
     audit(actor, vmid, failed, { error: err.message });
   } finally {
     invalidateGuestCache();
@@ -489,7 +489,8 @@ function lifecycleAccount(req,row,customer) {
 
 export async function reinstallServer(req, row, input) {
   resolveSshKeys(req.account.id, input);
-  if (computeManaged(row.vmid)) throw new ProvisionError(409, 'Catalog reinstall is not available yet. This protects the VM’s storage and placement.');
+  assertComputeIdle(row.vmid);
+  const allocation=allocationFor(row.vmid);
   const customer=requireCustomer(req);
   const account=lifecycleAccount(req,row,customer);
   const capacityKey=`customer:${customer.id}`;
@@ -549,6 +550,26 @@ export async function reinstallServer(req, row, input) {
       if(!destinationPool) throw new ProvisionError(403,'The reinstall destination is outside this customer’s pool boundary');
     }
     const net = config.network.enabled ? await ensureNetwork(account.id,row.customer_id) : null;
+    if (allocation) {
+      if (!guest || guest.type!=='qemu' || guest.status!=='stopped' || guest.lock || oldCfg.lock) throw new ProvisionError(409,'Stop the VM and wait for its tasks before reinstalling');
+      if (allocation.offering.haEnabled) throw new ProvisionError(409,'Disable HA before reinstalling this VM');
+      if (Object.entries((await pve.get(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/config`))).filter(([k,v])=>/^(scsi|sata|virtio|ide)\d+$/.test(k)&&!/media=cdrom|cloudinit/.test(String(v))&&!String(v).startsWith('none')).length!==1) throw new ProvisionError(400,'Catalog images must have one data disk');
+      const sourceConfig=await pve.get(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/config`);
+      if (Object.keys(sourceConfig).some(k=>/^net[1-9][0-9]*$/.test(k))) throw new ProvisionError(400,'Catalog images must have one guest network interface');
+      const offering=allocation.offering, storage=String(oldCfg[oldDisk]).split(':')[0];
+      if (Number(oldCfg.cores)*Number(oldCfg.sockets??1)!==offering.cores || Number(oldCfg.memory)!==offering.memoryMb || Math.ceil(diskSizeGb(oldCfg[oldDisk]))!==offering.diskGb) throw new ProvisionError(409,'Reconcile the VM hardware with its allocation before reinstalling');
+      const op=await serial(async()=>{
+        const plan=await selectPlacement({offering,template:tpl,sourceConfig,pool:destinationPool,existing:{vmid,node:guest.node,storage,diskGb:0,clone:true}});
+        const {password,username,sshKeys,...safeSpec}=spec;
+        return beginOperation({customerId:customer.id,userId:req.account.id,vmid,kind:'reinstalled',plan:{...plan,spec:safeSpec,template:tplRow,mac},credentials:{password,username,sshKeys},onReserve:id=>{
+          db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Reinstalling',spec=?,ostype=NULL WHERE vmid=?").run(JSON.stringify({...old,template:spec.templateId,loginMethod:spec.loginMethod,operationId:id,offering,pool:destinationPool,mac}),vmid);
+          db.prepare('DELETE FROM tasks WHERE vmid=?').run(vmid);
+          db.prepare('DELETE FROM tailscale WHERE vmid=?').run(vmid);
+        }});
+      });
+      runCatalogReinstall(op.id);
+      return;
+    }
 
     // The row keeps the ID reserved: new creations skip IDs the panel knows.
     db.prepare(`
@@ -799,8 +820,38 @@ export async function deleteServer(req, row) {
 }
 
 // Recovery follows accepted clone tasks. It never resubmits an ambiguous clone.
+async function runCatalogReinstall(id) {
+  const op=operationById(id), actor={account:{id:op.user_id},customerId:op.customer_id,ip:'compute'};
+  try {
+    const row=db.prepare('SELECT spec FROM vms WHERE vmid=? AND customer_id=?').get(op.vmid,op.customer_id);
+    if (!row || JSON.parse(row.spec??'{}').operationId!==id) throw new Error('VM ownership needs reconciliation');
+    db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Reinstalling' WHERE vmid=?").run(op.vmid);
+    const destroyed=operationStep(id,'destroy');
+    if (destroyed?.upid && destroyed.state!=='complete') await waitTask(destroyed.task_node,destroyed.upid);
+    if (destroyed?.state!=='complete') {
+      if (destroyed && !destroyed.upid) throw new Error('The deletion outcome needs provider reconciliation');
+      if (!destroyed) {
+        const {guest,path}=await lifecycleGuest(op);
+        if (guest.status!=='stopped') throw new Error('Stop the VM before reinstalling');
+        await lifecycleStep(id,'destroy',()=>pve.del(path,{purge:1,'destroy-unreferenced-disks':1}),()=>verifyComputeDeleted(op.vmid).then(()=>true));
+      } else { await verifyComputeDeleted(op.vmid); setOperationStep(id,'destroy','complete'); }
+    }
+    let cloned=operationStep(id,'clone');
+    if (!cloned) {
+      setOperationStep(id,'clone','submitting');
+      const upid=await pve.post(`/nodes/${encodeURIComponent(op.plan.sourceNode)}/qemu/${op.plan.templateId}/clone`,{newid:op.vmid,name:op.plan.spec.hostname,full:1,storage:op.plan.staging?.storage??op.plan.storage,pool:op.plan.pool,target:op.plan.staging||op.plan.sourceNode===op.plan.node?undefined:op.plan.node,description:`pve-panel-operation:${id}`});
+      setOperationStep(id,'clone','running',upid,op.plan.sourceNode);
+      updateOperation(id,'cloning',{upid,taskNode:op.plan.sourceNode});
+      cloned=operationStep(id,'clone');
+    }
+    if (!cloned.upid) throw new Error('The clone outcome needs provider reconciliation');
+    await finishCreate(actor,op.plan.node,op.vmid,cloned.upid,{...op.plan.spec,...operationCredentials(id)},op.plan.template,null,{operationId:id,taskNode:cloned.task_node,mac:op.plan.mac,done:'server_reinstalled',failed:'server_reinstall_failed'});
+  } catch(err) {lifecycleFailed(id,err);}
+}
+
 export function startComputeRecovery(log) {
   for (const op of pendingOperations()) {
+    if (op.kind === 'reinstalled') { runCatalogReinstall(op.id); continue; }
     if (op.kind === 'resized') { runCatalogResize(op.id); continue; }
     if (op.kind !== 'create') { updateOperation(op.id, 'review', { error: 'Interrupted operation needs reconciliation' }); continue; }
     if (!op.upid || !op.task_node) {
@@ -820,12 +871,13 @@ export function startComputeRecovery(log) {
 // Resume only an existing, identifiable VM. Never retry a clone POST.
 export async function reconcileComputeOperation(req, id, action) {
   const op = operationById(id);
+  if (op?.kind==='reinstalled' && !operationStep(id,'clone')) throw new ProvisionError(409,'An unknown deletion requires provider investigation');
   if (op?.state === 'review' && op.kind === 'resized' && action === 'resume') {
     updateOperation(id,'configuring');
     runCatalogResize(id);
     return {accepted:true};
   }
-  if (!op || op.state !== 'review' || op.kind !== 'create') throw new ProvisionError(409, 'This operation is not awaiting create reconciliation');
+  if (!op || op.state !== 'review' || !['create','reinstalled'].includes(op.kind)) throw new ProvisionError(409, 'This operation is not awaiting create reconciliation');
   const row = db.prepare('SELECT * FROM vms WHERE vmid=? AND customer_id=?').get(op.vmid, op.customer_id);
   if (!row || JSON.parse(row.spec ?? '{}').operationId !== id) throw new ProvisionError(409, 'VM ownership needs manual reconciliation');
   if (op.upid && op.task_node) {
@@ -854,7 +906,7 @@ export async function reconcileComputeOperation(req, id, action) {
     if (operationById(id).state !== 'review') throw new ProvisionError(409, 'This operation already resumed');
     updateOperation(id, 'configuring');
     db.prepare("UPDATE vms SET state='creating',error=NULL,progress='Resuming provisioning' WHERE vmid=?").run(op.vmid);
-    finishCreate({ account: { id: op.user_id }, customerId: op.customer_id, ip: req.ip }, op.plan.node, op.vmid, null, spec, op.plan.template, null, { operationId: id });
+    finishCreate({ account: { id: op.user_id }, customerId: op.customer_id, ip: req.ip }, op.plan.node, op.vmid, null, spec, op.plan.template, null, { operationId: id, mac:op.plan.mac, ...(op.kind==='reinstalled'?{done:'server_reinstalled',failed:'server_reinstall_failed'}:{}) });
   }
   audit({ account: req.account, customerId: op.customer_id, ip: req.ip }, op.vmid, 'admin_compute_reconcile', { id, action });
   return { accepted: true };

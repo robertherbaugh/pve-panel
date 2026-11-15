@@ -59,3 +59,20 @@ test('accepted disk growth resumes after restart without a second allocation',as
  assert.equal((await user.get(`/api/vms/${vmid}`)).json.resizable,true);
  stack.mock.cluster.resizeDelay=500;
 });
+test('catalog reinstall keeps the offering, placement, VMID and MAC while applying new login credentials',async()=>{
+ const old=stack.mock.vms.get(vmid),mac=/=[0-9A-Fa-f:]{17}/.exec(old.cfg.net0)[0];
+ const r=await user.post(`/api/vms/${vmid}/reinstall`,{templateId:9000,username:'newuser',password:'new-password-123'});assert.equal(r.status,202,r.text);
+ const settled=await stack.serverSettled(user,vmid);assert.equal(settled.state,'ready',settled.error);
+ const vm=stack.mock.vms.get(vmid);assert.equal(vm.node,'pve2');assert.match(vm.cfg.scsi0,/^nvme:.*size=35G/);assert.ok(vm.cfg.net0.includes(mac));assert.match(vm.cfg.net0,/bridge=vmbr0,tag=47/);assert.equal(vm.cfg.ciuser,'newuser');assert.equal(vm.cfg.cipassword,'new-password-123');
+ const a=sql.prepare('SELECT * FROM compute_allocations WHERE vmid=? AND ended_at IS NULL').all(vmid);assert.equal(a.length,1);assert.equal(JSON.parse(a[0].offering).sizeId,'small');
+});
+test('reinstall follows an accepted clone after restart and keeps one allocation',async()=>{
+ stack.mock.vms.get(vmid).status='stopped'; stack.mock.cluster.cloneDelay=5000;
+ const r=await user.post(`/api/vms/${vmid}/reinstall`,{templateId:9000,username:'again',password:'new-password-123'});assert.equal(r.status,202,r.text);
+ await waitFor(()=>sql.prepare("SELECT 1 FROM compute_operation_steps s JOIN compute_operations o ON o.id=s.operation_id WHERE o.vmid=? AND o.kind='reinstalled' AND s.name='clone' AND s.state='running'").get(vmid));
+ await stack.restartPanel();
+ const settled=await stack.serverSettled(user,vmid);assert.equal(settled.state,'ready',settled.error);
+ assert.equal(stack.mock.vms.get(vmid).cfg.ciuser,'again');
+ assert.equal(sql.prepare('SELECT count(*) n FROM compute_allocations WHERE vmid=? AND ended_at IS NULL').get(vmid).n,1);
+ stack.mock.cluster.cloneDelay=2500;
+});

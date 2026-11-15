@@ -90,7 +90,7 @@ test('lost clone response retains capacity, blocks destructive paths and resumes
  await waitFor(()=>!stack.mock.vms.get(op.vmid).lock);
  assert.equal((await admin.post(`/api/admin/compute-operations/${op.id}/reconcile`,{action:'resume'})).status,200);
  assert.equal((await stack.serverSettled(user,op.vmid)).state,'ready');
- assert.equal((await user.post(`/api/vms/${op.vmid}/reinstall`,{templateId:9000,username:'debian',password:'new-password-123'})).status,409);
+ assert.equal((await user.post(`/api/vms/${op.vmid}/reinstall`,{templateId:9000,username:'debian',password:'new-password-123'})).status,409,'running VMs must be stopped before catalog reinstall');
  stack.mock.vms.get(op.vmid).status='stopped';
  assert.equal((await user.del(`/api/vms/${op.vmid}`)).status,202);
  await waitFor(()=>sql.prepare('SELECT ended_at FROM compute_allocations WHERE vmid=?').get(op.vmid)?.ended_at);

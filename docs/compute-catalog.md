@@ -55,7 +55,10 @@ Unresolved operations block customer mutations and provider reassignment.
 Catalog resize preserves the datastore and storage class. The VM must be stopped.
 The customer selects an enabled size and can grow the disk.
 Resize records durable steps and replaces the previous capacity reservation after verification.
-Catalog reinstall and full restore need separate integration.
+Catalog reinstall preserves the offering, VM ID, MAC address, storage class and destination node.
+The VM must be stopped. New credentials apply before first boot.
+Recorded delete and clone tasks support restart recovery. Unknown submissions retain their reservations.
+Catalog full restore needs separate integration.
 Existing creation and lifecycle operations continue for customers without catalog opt-in.
 Do not enable catalog provisioning broadly before the pilot passes on the target infrastructure.
 
@@ -158,7 +161,7 @@ The existing guest network must provide connectivity from their private access n
 OIDC authenticates the panel session. Guest sign-in uses the credentials selected for that VM.
 Saved keys belong to the signed-in user across their customer memberships.
 Removing a saved key affects future provisioning. It does not remove keys from existing VMs.
-Legacy reinstall can select new sign-in settings. Catalog reinstall remains a separate delivery step.
+Reinstall can select new sign-in settings while preserving the catalog offering.
 Windows images continue to use their Administrator password. Containers use root with the selected credentials.
 
 The authenticated `/api/ssh-keys` endpoints list, save and remove personal public keys.
