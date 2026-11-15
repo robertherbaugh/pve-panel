@@ -174,6 +174,9 @@ The server resolves key IDs against the acting user's library before making Prox
 ## Basic backup execution
 
 Catalog customers must select the backup service before creating backups or schedules.
+Customer administrators can change this selection under **Account → Customer add-ons**.
+Turning it off removes automatic schedules. Existing archives retain their ownership and storage reservations.
+Turning it on does not create a schedule or change provider limits.
 Ridge and Summit include the service fee. They do not automatically select or schedule the service.
 Existing archives remain visible after the customer deselects the service.
 The provider's configured backup storage must have an enabled Basic mapping on the VM's node.

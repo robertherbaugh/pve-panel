@@ -1,3 +1,4 @@
+import computeServiceRoutes from './compute-services.js';
 import sshKeyRoutes from './ssh-keys.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -112,6 +113,7 @@ async function buildServer(name, setup) {
 const customer = await buildServer('customer', async (app) => {
   await app.register(websocket, { options: { maxPayload: 16 * 1024 * 1024 } });
   await app.register(authPlugin, { scope: 'customer' });
+  await app.register(computeServiceRoutes);
   await app.register(customerContextRoutes);
   await app.register(vmRoutes);
   await app.register(sshKeyRoutes);

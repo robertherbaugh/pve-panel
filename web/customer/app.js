@@ -1,3 +1,4 @@
+import { renderComputeServices } from './compute-services.js';
 import { renderSshKeys } from './ssh-keys.js';
 import {
   $, esc, api, toast, fail, confirmAction, promptText, generatePassword,
@@ -2000,6 +2001,7 @@ function openAccount() {
       <div id="security"></div>
       <div id="passkeys" class="account-section"></div>
       <div id="ssh-keys" class="account-section"></div>
+      <div id="compute-services" class="account-section"></div>
       ${state.account.panelVersion ? `
         <section class="security-card about-panel">
           <div>
@@ -2011,6 +2013,7 @@ function openAccount() {
   renderSecurity($('#security'), { email: state.me.email });
   renderPasskeys($('#passkeys'));
   renderSshKeys($('#ssh-keys'));
+  renderComputeServices($('#compute-services'));
 }
 $('#nav-account').addEventListener('click', openAccount);
 
