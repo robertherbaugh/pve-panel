@@ -1,3 +1,4 @@
+import { markedSections } from './sections.js';
 import { renderAdoption } from './compute-adoption.js';
 import { renderRemoteAccess } from './compute-remote.js';
 import { renderHaPolicy } from './compute-ha.js';
@@ -43,18 +44,19 @@ export function renderComputeCatalog(host, { data, customers, api, esc, toast, f
   function render() {
     host.innerHTML = `<div class="section-head"><div><h2 class="h2">Compute catalog</h2><p class="muted">Define VM sizes, storage destinations and customer offerings.</p></div><button class="btn" data-reload>Reload catalog</button></div>
       <div class="security-card compute-notice"><strong>Customer opt-in</strong><p>Enable catalog provisioning in each customer’s offerings after mapping storage and verifying guest networking. New VMs use reserved sizes and automatic placement. Saving the catalog does not move existing VMs or enable HA.</p></div>
-      <section class="compute-section"><div class="section-head"><div><h3>VM sizes</h3><p class="muted small">Disk capacity is separate. Disabled sizes remain available for configuration and review.</p></div><button class="btn primary" data-add-size>Add size</button></div>
-        <div class="table-wrap"><table class="table"><thead><tr><th>Size</th><th>vCPU</th><th>Memory</th><th>Minimum disk</th><th>Status</th><th>Actions</th></tr></thead><tbody>${catalog.sizes.map((s) => `<tr><td><strong>${esc(s.name)}</strong><span class="access-block mono muted small">${esc(s.id)}</span></td><td>${s.cores}</td><td>${s.memoryMb / 1024} GiB</td><td>${s.minDiskGb} GiB</td><td>${s.enabled ? 'Enabled' : 'Disabled'}</td><td><button class="btn" data-size="${esc(s.id)}">Edit</button></td></tr>`).join('') || '<tr><td colspan="6">No sizes configured.</td></tr>'}</tbody></table></div></section>
-      <section class="compute-section"><div class="section-head"><h3>Storage classes</h3></div><div class="compute-classes">${classes().map((c) => `<article class="security-card"><div class="section-head"><h4>${esc(c.name)}</h4><span class="pill">${c.enabled ? 'Enabled' : 'Disabled'}</span></div><p>${esc(c.description)}</p><p class="muted small">${c.bindings.filter((b) => b.purpose === 'vm').length} VM destinations${c.id === 'basic' ? ` · ${c.bindings.filter((b) => b.purpose === 'backup').length} backup destinations` : ''}</p><button class="btn" data-class="${c.id}">Edit ${esc(c.name)}</button></article>`).join('')}</div>
+      <section data-section="VM sizes" class="compute-section"><div class="section-head"><div><h3>VM sizes</h3><p class="muted small">Disk capacity is separate. Disabled sizes remain available for configuration and review.</p></div><button class="btn primary" data-add-size>Add size</button></div>
+        <div class="table-wrap"><table class="table" data-admin-table="VM sizes"><thead><tr><th>Size</th><th>vCPU</th><th>Memory</th><th>Minimum disk</th><th>Status</th><th>Actions</th></tr></thead><tbody>${catalog.sizes.map((s) => `<tr><td><strong>${esc(s.name)}</strong><span class="access-block mono muted small">${esc(s.id)}</span></td><td>${s.cores}</td><td data-sort-value="${s.memoryMb}">${s.memoryMb / 1024} GiB</td><td data-sort-value="${s.minDiskGb}">${s.minDiskGb} GiB</td><td>${s.enabled ? 'Enabled' : 'Disabled'}</td><td><button class="btn" data-size="${esc(s.id)}">Edit</button></td></tr>`).join('') || '<tr><td colspan="6">No sizes configured.</td></tr>'}</tbody></table></div></section>
+      <section data-section="Storage classes" class="compute-section"><div class="section-head"><h3>Storage classes</h3></div><div class="compute-classes">${classes().map((c) => `<article class="security-card"><div class="section-head"><h4>${esc(c.name)}</h4><span class="pill">${c.enabled ? 'Enabled' : 'Disabled'}</span></div><p>${esc(c.description)}</p><p class="muted small">${c.bindings.filter((b) => b.purpose === 'vm').length} VM destinations${c.id === 'basic' ? ` · ${c.bindings.filter((b) => b.purpose === 'backup').length} backup destinations` : ''}</p><button class="btn" data-class="${c.id}">Edit ${esc(c.name)}</button></article>`).join('')}</div>
         <p class="hint">Backup storage always uses Basic. Verify the physical media before mapping a datastore. Proxmox storage types alone do not identify HDD, SSD or NVMe.</p></section>
-      <div data-ha-policy></div><div data-remote-access></div><div data-adoption></div><section class="compute-section"><div class="section-head"><h3>Customer offerings</h3></div><p class="muted small">Service tier, sizes, storage and add-ons are separate from membership and VM permissions. HA remains off by default.</p>
-        <div class="table-wrap"><table class="table"><thead><tr><th>Customer</th><th>Actions</th></tr></thead><tbody>${customers.map((c) => `<tr><td>${esc(c.name)}${c.enabled ? '' : ' (disabled)'}</td><td><button class="btn" data-profile="${c.id}">Edit offerings</button></td></tr>`).join('') || '<tr><td colspan="2">Add a customer first.</td></tr>'}</tbody></table></div></section>
-      <section class="security-card compute-section"><h3>Capacity preview</h3><p class="hint">Checks observed host and storage capacity only. It does not reserve resources or validate templates, networking, HA, maintenance state or allocation permissions.</p>
+      <div data-section="High availability" data-ha-policy></div><div data-section="Private access" data-remote-access></div><div data-section="Adopt VMs" data-adoption></div><section data-section="Customer offerings" class="compute-section"><div class="section-head"><h3>Customer offerings</h3></div><p class="muted small">Service tier, sizes, storage and add-ons are separate from membership and VM permissions. HA remains off by default.</p>
+        <div class="table-wrap"><table class="table" data-admin-table="Customer offerings"><thead><tr><th>Customer</th><th>Actions</th></tr></thead><tbody>${customers.map((c) => `<tr><td>${esc(c.name)}${c.enabled ? '' : ' (disabled)'}</td><td><button class="btn" data-profile="${c.id}">Edit offerings</button></td></tr>`).join('') || '<tr><td colspan="2">Add a customer first.</td></tr>'}</tbody></table></div></section>
+      <section data-section="Capacity" class="security-card compute-section"><h3>Capacity preview</h3><p class="hint">Checks observed host and storage capacity only. It does not reserve resources or validate templates, networking, HA, maintenance state or allocation permissions.</p>
         <form data-preview class="settings"><div class="grid-2"><label>VM size<select name="sizeId" required>${catalog.sizes.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}${s.enabled ? '' : ' (disabled)'}</option>`).join('')}</select></label><label>Storage class<select name="storageClassId">${classes().map((c) => `<option value="${c.id}">${c.name}</option>`).join('')}</select></label>
         ${field('diskGb', 'Disk capacity (GiB)', Math.max(20, catalog.sizes[0]?.minDiskGb ?? 1), 'type="number" min="1" max="65536" required')}</div><button class="btn" type="submit">Check capacity</button><p data-error class="form-error" role="alert"></p></form><div data-preview-result aria-live="polite"></div>
         <form data-reserves class="settings compute-section"><h4>Capacity reserves</h4><div class="grid-2">${field('memoryMb', 'Host memory reserve (MiB)', catalog.reserves.memoryMb, 'type="number" min="0" max="1048576" required')}${field('diskGb', 'Datastore free space reserve (GiB)', catalog.reserves.diskGb, 'type="number" min="0" max="100000000" required')}</div><button class="btn" type="submit">Save reserves</button><p data-error class="form-error" role="alert"></p></form></section>
-      <section class="compute-section"><div class="section-head"><h3>Compute operations</h3><button class="btn" data-operations-refresh>Refresh operations</button></div><div data-operations aria-live="polite"></div></section>
+      <section data-section="Operations" class="compute-section"><div class="section-head"><h3>Compute operations</h3><button class="btn" data-operations-refresh>Refresh operations</button></div><div data-operations aria-live="polite"></div></section>
       <p class="hint">Reservation billing continues while VMs are stopped. Backup service fees and Basic storage usage are separate. No prices or invoices are active here.</p>`;
+    markedSections(host, 'Compute');
     renderHaPolicy(host.querySelector('[data-ha-policy]'),{api,esc});
     renderRemoteAccess(host.querySelector('[data-remote-access]'),{api,esc});
     renderAdoption(host.querySelector('[data-adoption]'),{api,esc,catalog,customers});
@@ -81,7 +83,7 @@ export function renderComputeCatalog(host, { data, customers, api, esc, toast, f
       try {
         const preview = await api('/api/admin/compute-catalog/preview', { method: 'POST', body: { sizeId: el.sizeId.value, storageClassId: el.storageClassId.value, diskGb: Number(el.diskGb.value) } });
         if (!active) return;
-        result.innerHTML = `<p class="muted small">Observed ${esc(preview.observedAt)} · Catalog revision ${preview.catalogRevision}</p>${preview.errors.map((s) => `<p class="form-error">${esc(s)}</p>`).join('')}<div class="table-wrap"><table class="table"><thead><tr><th>Node</th><th>Datastore</th><th>Capacity checks</th></tr></thead><tbody>${preview.candidates.map((c) => `<tr><td>${esc(c.node)}</td><td>${esc(c.storage)}</td><td>${c.passesCapacityChecks ? 'Passes observed capacity checks' : c.reasons.map(esc).join('<br>')}</td></tr>`).join('')}</tbody></table></div><p class="hint">No capacity reserved. Pending checks: ${preview.checksPending.map(esc).join(', ')}.</p>`;
+        result.innerHTML = `<p class="muted small">Observed ${esc(preview.observedAt)} · Catalog revision ${preview.catalogRevision}</p>${preview.errors.map((s) => `<p class="form-error">${esc(s)}</p>`).join('')}<div class="table-wrap"><table class="table" data-admin-table="Capacity preview"><thead><tr><th>Node</th><th>Datastore</th><th>Capacity checks</th></tr></thead><tbody>${preview.candidates.map((c) => `<tr><td>${esc(c.node)}</td><td>${esc(c.storage)}</td><td>${c.passesCapacityChecks ? 'Passes observed capacity checks' : c.reasons.map(esc).join('<br>')}</td></tr>`).join('')}</tbody></table></div><p class="hint">No capacity reserved. Pending checks: ${preview.checksPending.map(esc).join(', ')}.</p>`;
       } catch (err) { result.textContent = ''; f.querySelector('[data-error]').textContent = err.message; }
       finally { button.disabled = false; }
     };
@@ -89,20 +91,31 @@ export function renderComputeCatalog(host, { data, customers, api, esc, toast, f
 
   async function loadOperations() {
     const target = host.querySelector('[data-operations]');
-    try {
-      const [{ operations }, { reservations }] = await Promise.all([api('/api/admin/compute-operations'), api('/api/admin/compute-backup-reservations')]);
-      if (!active || !target.isConnected) return;
-      target.innerHTML = `<div class="table-wrap"><table class="table"><thead><tr><th>VM</th><th>Operation</th><th>State</th><th>Placement</th><th>Actions</th></tr></thead><tbody>${operations.map(o => `<tr><td>${o.vmid}</td><td>${esc(o.kind)}</td><td>${esc(o.state)}${o.error ? `<span class="access-block small">${esc(o.error)}</span>` : ''}</td><td>${esc(o.node)} / ${esc(o.storage)}</td><td>${o.state === 'review' ? `<button class="btn" data-resume="${esc(o.id)}">Resume existing VM</button><button class="btn" data-release="${esc(o.id)}">Release if absent</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5">No compute operations yet.</td></tr>'}</tbody></table></div>`;
-      target.insertAdjacentHTML('beforeend', `<h4>Basic backup reservations</h4><p class="hint">Logical disk capacity reserves backup quota. Reported archive bytes are separate from PBS physical usage. Uncertain jobs retain their quota until reconciled.</p><div class="table-wrap"><table class="table"><thead><tr><th>Job / VM</th><th>State</th><th>Reserved</th><th>Actions</th></tr></thead><tbody>${reservations.map(r => `<tr><td>${r.job_id} / ${r.vmid}</td><td>${esc(r.state)}</td><td>${r.reserved_bytes / 2**30} GiB</td><td>${r.state === 'held' ? `<button class="btn" data-reconcile-backup="${r.job_id}">Find completed archive</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="4">No backup reservations yet.</td></tr>'}</tbody></table></div>`);
-      target.querySelectorAll('[data-reconcile-backup]').forEach(b => {b.onclick=async()=>{
-        b.disabled=true;try {await api(`/api/admin/compute-backup-reservations/${b.dataset.reconcileBackup}/reconcile`,{method:'POST'});await loadOperations();}catch(err){fail(err);}finally{b.disabled=false;}
-      };});
-      for (const action of ['resume', 'release']) target.querySelectorAll(`[data-${action}]`).forEach(b => { b.onclick = async () => {
-        b.disabled = true;
-        try { await api(`/api/admin/compute-operations/${b.dataset[action]}/reconcile`, { method: 'POST', body: { action } }); await loadOperations(); }
-        catch (err) { fail(err); } finally { b.disabled = false; }
-      }; });
-    } catch (err) { if (active && target.isConnected) target.textContent = err.message; }
+    if (!active || !target?.isConnected) return;
+    target.innerHTML = `<div class="table-wrap"><table class="table" data-admin-table="Compute operations" data-default-sort="time" data-default-order="desc"><thead><tr><th data-key="vm">VM</th><th data-key="kind">Operation</th><th data-key="state">State</th><th data-key="placement">Placement</th><th data-key="time">Created</th><th>Actions</th></tr></thead><tbody></tbody></table></div>
+      <h4>Basic backup reservations</h4><p class="hint">Logical disk capacity reserves backup quota. Reported archive bytes are separate from PBS physical usage. Uncertain jobs retain their quota until reconciled.</p>
+      <div class="table-wrap"><table class="table" data-admin-table="Backup reservations" data-default-sort="job" data-default-order="desc"><thead><tr><th data-key="job">Job</th><th data-key="vm">VM</th><th data-key="state">State</th><th data-key="reserved">Reserved (GiB)</th><th>Actions</th></tr></thead><tbody></tbody></table></div>`;
+    target.querySelector('[data-admin-table="Compute operations"]').adminRemote = {
+      endpoint: '/api/admin/compute-operations',
+      row: o => `<tr><td>${o.vmid}</td><td>${esc(o.kind)}</td><td>${esc(o.state)}${o.error ? `<span class="access-block small">${esc(o.error)}</span>` : ''}</td><td>${esc(o.node)} / ${esc(o.storage)}</td><td>${esc(new Date(o.createdAt).toLocaleString())}</td><td>${o.state === 'review' ? `<button class="btn" data-resume="${esc(o.id)}">Resume existing VM</button><button class="btn" data-release="${esc(o.id)}">Release if absent</button>` : ''}</td></tr>`,
+    };
+    target.querySelector('[data-admin-table="Backup reservations"]').adminRemote = {
+      endpoint: '/api/admin/compute-backup-reservations',
+      row: r => `<tr><td>${r.job_id}</td><td>${r.vmid}</td><td>${esc(r.state)}</td><td>${r.reserved_bytes / 2**30}</td><td>${r.state === 'held' ? `<button class="btn" data-reconcile-backup="${r.job_id}">Find completed archive</button>` : ''}</td></tr>`,
+    };
+    target.onclick = async event => {
+      const button = event.target.closest('[data-reconcile-backup],[data-resume],[data-release]');
+      if (!button) return;
+      button.disabled = true;
+      try {
+        if (button.dataset.reconcileBackup) await api(`/api/admin/compute-backup-reservations/${button.dataset.reconcileBackup}/reconcile`, { method: 'POST' });
+        else {
+          const action = button.dataset.resume ? 'resume' : 'release';
+          await api(`/api/admin/compute-operations/${button.dataset[action]}/reconcile`, { method: 'POST', body: { action } });
+        }
+        target.querySelectorAll('table').forEach(t => t.dispatchEvent(new Event('admin-table-refresh')));
+      } catch (err) { fail(err); } finally { button.disabled = false; }
+    };
   }
 
   function editSize(existing = null) {

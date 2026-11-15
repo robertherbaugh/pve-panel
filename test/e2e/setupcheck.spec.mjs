@@ -15,6 +15,7 @@ test('setup check: runs on first open, shows problems with how to fix them', asy
   await expect(page.locator('.setup-verdict')).toBeVisible();
 
   // the test stack still has INITIAL_ADMIN_PASSWORD set: a warning with a fix
+  await page.getByRole('tab', { name: /Security/ }).click();
   const initial = page.locator('[data-check="sec:initial"]');
   await expect(initial).toHaveClass(/status-warn/);
   await initial.locator('summary', { hasText: 'How to fix' }).click();

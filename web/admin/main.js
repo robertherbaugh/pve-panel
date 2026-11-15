@@ -1,11 +1,13 @@
 import {
   $, esc, api, toast, fail, confirmAction, promptText, SignedOut, setUnauthorizedHandler,
 } from '/shared/ui.js';
+import { installAdminTables } from './tables.js';
 import { createAdmin } from '/admin.js';
 import { brandMark, applyBrand } from '/shared/icons.js';
 import { signInSecondStep } from '/shared/twofa.js';
 import { prepareSignIn, resumeSso } from '/shared/signin.js';
 
+installAdminTables(document.body, { api });
 applyBrand('Administration');
 document.querySelectorAll('[data-brand-mark]').forEach((el) => { el.innerHTML = brandMark(28); });
 
