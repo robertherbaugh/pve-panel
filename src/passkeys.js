@@ -1,3 +1,4 @@
+import { brandingName } from './branding.js';
 // Passkeys (WebAuthn / FIDO2): sign-in with fingerprint, face, device PIN or a
 // security key. Phishing-resistant: a passkey only works on the domain it was
 // created for, and the browser enforces that.
@@ -85,7 +86,7 @@ export async function registrationOptions(scope, req, user) {
   requireUsable(rp);
   const existing = db.prepare('SELECT id, transports FROM passkeys WHERE user_id = ? AND rp_id = ?').all(user.id, rp.rpID);
   const options = await generateRegistrationOptions({
-    rpName: config.brand.name,
+    rpName: brandingName(),
     rpID: rp.rpID,
     userName: user.email,
     userDisplayName: user.email,

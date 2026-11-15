@@ -1,3 +1,4 @@
+import { brandingName } from './branding.js';
 // Two-factor authentication with time-based one-time codes (TOTP, RFC 6238),
 // compatible with Google Authenticator, Microsoft Authenticator, Authy, etc.
 //
@@ -123,7 +124,7 @@ export async function beginSetup(userId) {
   const secret = crypto.randomBytes(20);
   db.prepare('UPDATE users SET totp_pending = ? WHERE id = ?').run(encrypt(secret), userId);
   const key = base32Encode(secret);
-  const issuer = config.brand.name;
+  const issuer = brandingName();
   const label = encodeURIComponent(`${issuer}:${u.email}`);
   const uri = `otpauth://totp/${label}?secret=${key}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=${DIGITS}&period=${STEP}`;
   return {

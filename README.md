@@ -1173,11 +1173,9 @@ npm run db:backup
 
 ## 🔧 Branding
 
-Change the product name through `.env`:
-
-```env
-PANEL_NAME=PVE Panel
-```
+Open **Admin → Settings → Branding** to change the panel name and upload images.
+The panel stores the name and image bytes in SQLite. Database backups include them.
+Changes apply without a restart. Other open pages use the saved branding when they reload.
 
 The configured name is used on:
 
@@ -1199,28 +1197,25 @@ Five color schemes — **Harbor** (default), **Forest**, **Ember**, **Orchid**, 
 
 Both portals show the PVE Panel logo next to the product name — on the sign-in pages, in the sidebar and in the admin bar — and use it as the browser tab and home screen icon. The letter follows the color scheme, so the logo fits every scheme in light and dark mode.
 
-To use **your own logo** instead (for example with your own `PANEL_NAME`), put `logo.svg` (or `logo.png` / `logo.webp`) into the branding folder (see below). It replaces the logo in both portals and in the browser tab. A square or slightly wide image works best; it's shown 28–32 px high.
+Use **Upload logo** in **Settings → Branding** to replace it. A square or slightly wide image works best. The panel shows it 28–32 pixels high. Remove the upload to restore the built-in logo and browser icons.
 
 ### Own OS icons
 
-Windows and Linux servers are shown with neutral built-in glyphs. To use your own icons, place any of these files in the branding folder:
+Upload Windows and Linux icons in the same Branding card. Remove an upload to restore its built-in glyph.
 
-```text
-os-windows.svg   os-linux.svg     (or .png / .webp)
-```
+Uploads accept PNG, JPEG, WebP and SVG, with a limit of **1 MiB per image**. Raster images have a limit of 8192 pixels per side and 16 megapixels. SVG uploads must contain valid XML without scripts, event handlers, document types or external image references. Public image responses use a sandbox policy.
 
-The folder is `BRANDING_DIR` (default `data/branding/` next to the database). With Docker, mount it:
+### Existing installations
 
-```yaml
-volumes:
-  - ./branding:/app/branding:ro
-```
+On the first upgrade, the panel imports `PANEL_NAME` and the fixed files `logo.*`, `os-windows.*` and `os-linux.*`. It reads them from `BRANDING_DIR`, or `data/branding/` beside the database. Imported images must satisfy the upload limits. The panel logs a warning if an image cannot be imported.
 
-```env
-BRANDING_DIR=/app/branding
-```
+This import runs once. Later ENV or mounted-file changes do not replace saved branding. Removed images stay removed after a restart. You can remove the old branding mount after the import succeeds.
 
-Only these file names (`logo.*`, `os-windows.*`, `os-linux.*`) are served, with a strict sandbox policy. Make sure you're allowed to use the images you add.
+### Branding API
+
+Platform administrators can read `/api/admin/settings/branding` and update its name with `PUT { "name": "RCADEA Cloud" }`. Upload an image with `PUT /api/admin/settings/branding/:slot` and `{ "type": "image/png", "data": "<base64>" }`. Supported slots are `logo`, `os-windows` and `os-linux`. Use `DELETE` on a slot to restore its built-in artwork.
+
+Every write requires the latest `revision` value in the `If-Match` header. This prevents a stale editor from replacing another administrator's changes. `/api/brand` remains public so sign-in pages can display the branding. Public image URLs include content hashes to refresh browser caches after replacement.
 
 ---
 

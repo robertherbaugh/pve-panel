@@ -3,25 +3,21 @@ title: Branding
 sidebar_position: 4
 ---
 
-**Product name:** set `PANEL_NAME` in `.env` (default `PVE Panel`) and restart. It
-appears on both sign-in pages, in the sidebar and in browser tabs.
+Use **Admin → Settings → Branding** to change the panel name, logo and Windows/Linux icons. The panel stores settings and image bytes in its database. Database backups include the branding.
 
-**Logo:** both portals show the PVE Panel logo next to the product name — on the sign-in
-pages, in the sidebar and in the admin bar — and use it as the browser tab and home screen
-icon. The letter takes the color of the text around it, so the logo fits every color
-scheme in light and dark mode.
+The saved name applies to both portals, sign-in pages, browser titles and email content. New authenticator and passkey enrollments use that name. Existing authenticator entries keep their previous label. SMTP sender names remain separate email settings.
 
-**Own logo:** put `logo.svg` (or `logo.png` / `logo.webp`) into the branding folder (see
-below). It replaces the logo in both portals and in the browser tab, which is useful with
-your own `PANEL_NAME`. A square or slightly wide image works best; it's shown 28–32 px
-high. Browsers that visited before pick it up on the next page load.
+## Upload images
 
-**Own OS icons:** the panel shows neutral glyphs for Windows and Linux servers. To
-use your own icons instead, put `os-windows.svg` and/or `os-linux.svg` (or `.png` /
-`.webp`) into the branding folder: `BRANDING_DIR`, default `data/branding/` next to
-the database. With Docker, mount a folder and set `BRANDING_DIR` (see
-`docker-compose.yml`). Only these file names (`logo.*`, `os-windows.*`, `os-linux.*`) are served, with a strict sandbox
-policy. Make sure you're allowed to use the images you put there.
+Choose **Upload logo**, **Upload windows icon** or **Upload linux icon**. Uploads apply immediately. Other open pages show the new branding after a reload. A logo also replaces the browser tab and home screen icons. Remove an upload to restore the built-in artwork.
+
+Use PNG, JPEG, WebP or SVG, up to **1 MiB per image**. Raster images cannot exceed 8192 pixels per side or 16 megapixels. SVG files must contain valid XML without scripts, event handlers, document types or external image references.
+
+## Upgrade existing branding
+
+The first upgrade imports `PANEL_NAME` and fixed image files from `BRANDING_DIR`. The default folder is `data/branding/` beside the database. The accepted file names are `logo.*`, `os-windows.*` and `os-linux.*`. Imported images must meet the upload limits. The panel logs a warning for an image it cannot import.
+
+The import runs once. Later ENV or file changes do not overwrite database settings. Removed images stay removed after restarts. Verify the import before removing an old branding mount.
 
 ## Color scheme
 
