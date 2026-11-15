@@ -1,3 +1,4 @@
+import { adminTable } from '../admin-table.js';
 import { adoptionCandidates, adoptCompute } from '../compute-adoption.js';
 import { remoteAccessSettings, saveRemoteAccessSettings } from '../remote-access-settings.js';
 import { haPolicy, saveHaPolicy } from '../compute-ha-policy.js';
@@ -23,13 +24,30 @@ export default async function computeCatalogRoutes(app) {
   app.put('/api/admin/remote-access',async req=>{const value=saveRemoteAccessSettings(req.body);audit(req,null,'admin_remote_access',{provider:value.provider,loginServer:value.loginServer});return value;});
   app.get('/api/admin/compute-ha-policy',async()=>haPolicy());
   app.put('/api/admin/compute-ha-policy',async req=>{const saved=saveHaPolicy(req.body);audit(req,null,'admin_ha_policy',{revision:saved.revision});return saved;});
-  app.get('/api/admin/compute-backup-reservations', async () => ({ reservations: backupReservations() }));
+  app.get('/api/admin/compute-backup-reservations', async req => req.query.paginated === undefined
+    ? { reservations: backupReservations() }
+    : adminTable(req.query, {
+      from: 'compute_backup_reservations',
+      select: 'job_id, customer_id, vmid, node, storage, storage_key, reserved_bytes, archive_bytes, volid, state, created_at, ended_at',
+      columns: { job: 'job_id', vm: 'vmid', state: 'state', reserved: 'reserved_bytes / 1073741824.0' },
+      defaultSort: 'job', tieBreak: 'job_id DESC',
+    }));
   app.post('/api/admin/compute-backup-reservations/:id/reconcile', async req => {
     const result = await reconcileBackupReservation(Number(req.params.id));
     audit(req, null, 'admin_backup_reservation_reconcile', { jobId: Number(req.params.id) });
     return result;
   });
-  app.get('/api/admin/compute-operations', async () => ({ operations: computeOperations() }));
+  app.get('/api/admin/compute-operations', async req => req.query.paginated === undefined
+    ? { operations: computeOperations() }
+    : adminTable(req.query, {
+      from: 'compute_operations',
+      // Never return the plan, credentials, request hashes or idempotency keys.
+      select: `id, vmid, customer_id AS customerId, kind, state, error,
+        json_extract(plan, '$.node') AS node, json_extract(plan, '$.storage') AS storage,
+        json_extract(plan, '$.offering.sizeId') AS sizeId, created_at AS createdAt, updated_at AS updatedAt`,
+      columns: { vm: 'vmid', kind: 'kind', state: "state || ' ' || COALESCE(error, '')", placement: "COALESCE(json_extract(plan, '$.node'), '') || ' / ' || COALESCE(json_extract(plan, '$.storage'), '')", time: 'created_at' },
+      defaultSort: 'time', tieBreak: 'id DESC',
+    }));
   app.post('/api/admin/compute-operations/:id/reconcile', { schema: { body: { type: 'object', additionalProperties: false, required: ['action'], properties: { action: { enum: ['resume', 'release'] } } } } }, async (req) => reconcileComputeOperation(req, req.params.id, req.body.action));
   app.get('/api/admin/compute-catalog', async () => computeCatalog());
   app.put('/api/admin/compute-catalog', async (req) => {

@@ -1,3 +1,5 @@
+import { adminTable } from '../admin-table.js';
+import { ACTION_LABELS } from '../../web/shared/audit-actions.js';
 import { computeManaged } from '../compute-state.js';
 import bcrypt from 'bcryptjs';
 import { createHash } from 'node:crypto';
@@ -735,6 +737,15 @@ export default async function adminRoutes(app) {
   // ---- Activity ---------------------------------------------------------
 
   app.get('/api/admin/audit', async (req) => {
+    if (req.query.paginated !== undefined) {
+      const label = `CASE a.action ${Object.entries(ACTION_LABELS).map(([key, value]) => `WHEN '${key}' THEN '${value.replaceAll("'", "''")}'`).join(' ')} ELSE a.action END`;
+      return adminTable(req.query, {
+        from: 'audit_log a LEFT JOIN users u ON u.id = a.user_id',
+        select: 'a.id, a.vmid, a.action, a.detail, a.ip, a.created_at AS createdAt, u.email',
+        columns: { time: 'a.created_at', who: 'u.email', what: `${label} || ' ' || a.action || ' ' || COALESCE(a.detail, '')`, server: 'a.vmid', ip: 'a.ip' },
+        defaultSort: 'time', tieBreak: 'a.id DESC',
+      });
+    }
     const limit = Math.min(Number(req.query.limit) || 200, 500);
     return db.prepare(`
       SELECT a.id, a.vmid, a.action, a.detail, a.ip, a.created_at AS createdAt, u.email
