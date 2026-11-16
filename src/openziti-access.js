@@ -102,7 +102,7 @@ function ssoUser(req) {
     u.oidc_issuer !== zitiSettings().panelIssuer
   )
     throw zitiError(
-      "Sign in through the configured Authentik provider to connect to a VM",
+      "Sign in through the configured SSO provider to connect to a VM",
       403,
     );
   return u;
@@ -171,7 +171,7 @@ async function cleanupUnusedUsers(client) {
 }
 export async function zitiBrowserConfig() {
   const s = zitiSettings();
-  return { controller: s.clientUrl, provider: "Authentik", mode: "sso" };
+  return { controller: s.clientUrl, provider: "SSO", mode: "sso" };
 }
 async function cleanup(client, owner) {
   const objects = db

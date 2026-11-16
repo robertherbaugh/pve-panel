@@ -688,11 +688,21 @@ dialog#delete-user { max-width: min(560px, calc(100vw - 32px)); }
 .recovery-grid li { font-size: 15px; letter-spacing: 0.04em; }
 .saved-check { font-weight: 600; }
 .security-card {
-  display: flex; gap: 20px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap;
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--content-gap); align-content: start;
   max-width: 820px; padding: 20px 22px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface);
 }
-.security-card > div:first-child { flex: 1; min-width: 260px; display: grid; gap: 8px; }
+.security-card > * { min-width: 0; }
+.security-card > :is(h2, h3, .section-head) { margin: 0; }
+.security-card > :is(.billing-summary, .billing-toolbar) { margin-block: 0; }
+.security-card > .btn, .security-card form > .btn { justify-self: start; }
+.security-card > form:not(.row), .settings > form { display: grid; gap: var(--content-gap); }
+.security-card-split { display: flex; gap: 20px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+.security-card-copy { display: grid; gap: 8px; min-width: 0; }
+.security-card-split > .security-card-copy { flex: 1 1 260px; }
 .security-card p { margin: 0; max-width: 62ch; }
+.security-card pre.selectable, [data-enrollment-result] pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.private-access-form { align-items: end; }
+.private-access-table { min-width: 760px; }
 .warn-text { color: color-mix(in srgb, var(--warn) 50%, var(--ink)); font-weight: 600; }
 .reset-box { padding: 14px; border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line)); border-radius: var(--r-md); display: grid; gap: 10px; justify-items: start; }
 .reset-box p { margin: 0; }
@@ -1286,8 +1296,7 @@ dialog.access-rule-modal { width: min(900px, calc(100vw - 32px)); max-width: non
 .ha-terms { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; font: inherit; }
 
 /* Shared admin sections and inventory controls. */
-.admin-section-panel { min-width: 0; }
-.admin-section-panel > :first-child { margin-top: 0; }
+.section-panel { min-width: 0; }
 .admin-table-toolbar, .admin-table-footer, .admin-table-pages {
   display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
 }
@@ -1315,6 +1324,25 @@ dialog.access-rule-modal { width: min(900px, calc(100vw - 32px)); max-width: non
 .billing-toolbar { margin:1rem 0; gap:.5rem; flex-wrap:wrap }
 [data-email] { display:flex; align-items:end; gap:.75rem; flex-wrap:wrap }
 [data-email] label { flex:1; min-width:15rem }
+
+/* Shared vertical rhythm for customer and administrator pages. */
+:root { --section-gap: 24px; --content-gap: 16px; }
+.page, .detail-inner, .section-stack, .section-panel, .admin-inner, #admin-body {
+  display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--section-gap);
+}
+.section-panel > [data-section] { display: grid; gap: var(--content-gap); min-width: 0; }
+.page > *, .detail-inner > *, .section-stack > *, .section-panel > *, .admin-inner > *, #admin-body > *,
+.section-panel > [data-section] > *, .page > .h2, .section-stack > .danger-zone {
+  margin-block: 0; min-width: 0;
+}
+:is(.page, .detail-inner, .section-stack, .section-panel) > div:empty { display: none; }
+.billing-page .security-card { max-width: none; }
+.billing-email-form label { min-width: min(15rem, 100%); }
+.page .h2:first-child { margin-top: 0; }
+:is(.page, .detail-inner, .section-stack, .section-panel) > :is(.btn, .link-btn) { justify-self: start; }
+@media (max-width: 600px) {
+  :root { --section-gap: 20px; }
+}
 
 .server-bulk { gap:.75rem; align-items:end; margin:0 0 1rem; flex-wrap:wrap }
 .server-bulk label { display:grid; gap:.35rem; min-width:15rem }

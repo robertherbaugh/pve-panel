@@ -423,7 +423,7 @@ export async function assertZitiAuthPolicies(c) {
   const s = c.settings;
   if (!s.ssoConfigured)
     throw zitiError(
-      "Configure Authentik SSO and separate user/machine authentication policies first",
+      "Configure SSO and separate user/machine authentication policies first",
       409,
     );
   const signer = await c.request(
