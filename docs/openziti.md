@@ -1,146 +1,185 @@
-# Private access and OpenZiti pilot
+# Private access with Authentik and OpenZiti
 
-The administrator's **Private Access** page shows OpenZiti, Headscale,
-Tailscale, WireGuard and zrok, including disabled providers. Each supported
-provider reports its configuration and enrollment status. A saved configuration
-does not by itself prove that a provider is healthy. zrok is a planned integration.
+The **Private Access** page shows OpenZiti, Headscale, Tailscale, WireGuard and zrok.
+Each provider reports its configuration and enrollment state. zrok remains a planned integration.
 
-OpenZiti provides access to individual VM services. It does not create customer
-subnets, change Proxmox SDN or expose public applications. The first version
-supports SSH on TCP 22 and Remote Desktop on TCP 3389. The hosting tunneler
-forwards to `127.0.0.1` inside the VM. SSH keys, passwords and Windows account
-permissions still apply to the final connection.
+OpenZiti connects users to individual VM services without a customer subnet or Proxmox SDN.
+The supported services are SSH on TCP 22 and Remote Desktop on TCP 3389.
+The machine agent forwards each service to `127.0.0.1` inside its VM.
+Guest SSH keys, passwords and Windows account permissions still apply.
 
-## Provider setup
+## Identity and authorization
 
-Use a dedicated controller and edge router for customer access. Keep them
-separate from infrastructure OpenZiti identities and services.
+| Identity | Authentication | Authorization |
+| --- | --- | --- |
+| Human user | Authentik browser login through an external JWT signer | Exact VM-service grants from the panel |
+| VM agent | A certificate from one-time machine enrollment | Bind access to its exact service |
+| Panel management account | Encrypted controller credential | Administrator of the dedicated customer controller |
 
-1. Install and back up a supported OpenZiti controller and edge router. Publish
-   stable advertised DNS addresses that the panel, guest VMs and customer devices
-   can reach. Configure valid TLS certificates and synchronize system clocks.
-2. Protect the management API with network restrictions. The panel must reach
-   `/edge/management/v1`. Customer tunnelers need the advertised client API and
-   router listeners. The panel does not install this infrastructure or manage
-   its firewall, certificates, persistence or upgrades.
-3. Create a dedicated controller administrator for the panel. The integration
-   checks management administrator access. Treat this as a privileged credential
-   for the dedicated customer controller.
-4. Give customer edge routers the `rcadea-customers` role attribute, or use a
-   different exact role in the panel configuration. At least one must be online.
-5. Remove service policies that grant `#all` identities. The panel rejects these
-   policies, including ones after the first inventory page. Review other policies
-   on the dedicated controller for unintended access. Keep the `host.v1` and
-   `intercept.v1` configuration types available.
-6. In **Private Access → OpenZiti**, save the controller HTTPS address,
-   management credentials and router role with enrollment disabled. A private CA
-   bundle is optional. TLS verification remains enabled. The panel rejects redirects.
-7. Test the controller, then enable enrollment within five minutes of that test.
-   Changing connection settings requires another successful test. Controller and
-   router-role changes are blocked while managed objects remain.
+Use a separate Authentik application and public OIDC client for OpenZiti.
+Its authorization code flow uses PKCE with S256 and exact native client callback URLs.
+Request `openid profile offline_access` to permit token refresh.
+The controller checks the token signature through JWKS, issuer, audience and expiry.
+The user authentication policy requires the selected signer and refuses certificate and password authentication.
+It also requires that signer as a secondary authentication factor.
+Keep certificate authentication enabled only in the separate machine policy.
 
-Provider settings are stored in the panel database. The management password is
-encrypted with the existing `JWT_SECRET` encryption mechanism. Back up and
-protect both the database and that secret. The secret must remain stable across
-restarts. The panel logs out management sessions after each operation.
+The panel pre-creates an OpenZiti user identity only after an authorized service access request.
+Directory login does not enroll unknown identities or grant services.
+Disable certificate and token auto-enrollment on the external JWT signer.
+Do not map directory groups directly to broad OpenZiti service roles.
+The panel retains control of customer membership, groups, entitlements and VM selectors.
+
+One OpenZiti user identity supports multiple devices and VM-service grants.
+Its external ID must match the panel's immutable OIDC subject.
+Configure both Authentik providers to use `hashed_user_id`, which resolves to the same immutable `user.uid`.
+Check this mapping before enabling access. Never match identities by email or domain.
+Other providers can issue different subject values for different OIDC clients.
+
+## Controller setup
+
+Use a dedicated customer controller and edge router, with public client and router listeners.
+Restrict the management API to the panel and operator networks.
+Use verified TLS and maintain controller backups, certificates and system clocks.
+
+1. Create the Authentik public OIDC client, JWT signer and separate authentication policies.
+2. Give an online edge router the exact `rcadea-customers` role, or configure another exact role.
+3. Remove service policies that grant `#all` identities. The panel checks all policy pages.
+4. Keep the controller's `host.v1` and `intercept.v1` configuration types available.
+5. Save the disabled configuration in **Private Access → OpenZiti**.
+6. Enter the public client URL, panel OIDC issuer, JWT signer ID and both authentication policy IDs.
+7. Test the controller, then enable access within five minutes of that test.
+
+Connection or authentication changes require another controller check.
+The panel blocks changes to controller, router and identity settings while managed objects remain.
+The controller check rejects user certificate fallback, broad signer lists and machine policies that require interactive login.
+
+The panel stores provider settings in its database.
+It encrypts the management password with the existing `JWT_SECRET` mechanism.
+Protect and back up both the database and that stable secret.
+The panel rejects controller redirects and closes management sessions after each operation.
 
 ## Customer permissions
 
-Existing permission sets are preserved. Grant these actions explicitly where
-customers use OIDC group or application-entitlement rules:
+Existing permission sets remain unchanged. Add these actions to the applicable OIDC rules:
 
 | Action | Capability |
 | --- | --- |
-| `view` | Required VM visibility in the same permission set. |
-| `private-access.read` | View services, enroll a personal device, renew or revoke its access. |
-| `private-access.manage` | Create or remove SSH/RDP services and download the VM hosting enrollment. |
+| `view` | Required visibility in the same permission set |
+| `private-access.read` | Enable, renew and revoke the user's service access |
+| `private-access.manage` | Create services, install machine agents and download machine enrollment files |
 
-Grant both private-access actions to a service administrator. Customer
-administrators receive the actions through their existing administrator role.
-Other customer roles require explicit grants. Customer membership, exact pool,
-tag and VM selectors, disabled state and current OIDC authorization apply.
-An imported pool VM can receive service access without an individual assignment.
-An explicit assignment to another customer takes precedence.
+Customer administrators also receive these capabilities through their existing role.
+Pool membership, exact VM and tag selectors, explicit assignments and current OIDC authorization apply.
+An explicit assignment to another customer takes precedence over a pool match.
+Users must sign in through the configured OIDC provider to enable or renew network access.
+A local password session cannot borrow the linked account's SSO identity.
 
-## Enrollment and connection
+## Automatic Linux machine provisioning
 
-The pilot uses manual tunneler installation and enrollment. It does not install
-software in guest VMs or issue Headscale keys.
+Enable **Enroll new Linux VMs during provisioning** after the image and token checks pass.
+This setting applies to new Linux QEMU VMs and Linux reinstalls.
 
-1. A customer service administrator selects the VM's **Remote access → OpenZiti**
-   tab and adds an SSH or RDP service.
-2. Download **VM enrollment** and transfer it securely to that VM. Install an
-   appropriate OpenZiti tunneler there and enroll the hosting identity.
-3. Each user selects **Enroll my device**, then enrolls the separate personal
-   identity on the device from which they will connect. An identity is scoped to
-   one service and one user. Do not share identity files.
-4. Start or reload the appropriate tunnelers. Connect to the private
-   hostname using an ordinary SSH or Remote Desktop client.
+The image must contain the QEMU guest agent, Python 3, `flock`, cloud-init and systemd.
+Enable the guest agent in the Proxmox image configuration.
+Keep machine identities and enabled RCADEA host services out of reusable images.
+The guest must reach GitHub over HTTPS, the public controller API and the edge router.
+The panel token needs `VM.GuestAgent.Unrestricted` on the destination customer pool.
+This privilege permits guest command execution. Keep its ACL limited to the intended customer pools.
 
-For a Linux tunneler that supports the `enroll` command:
+After the first boot, the panel waits for the guest agent and cloud-init.
+It creates an SSH service and a certificate-only machine identity.
+The guest agent supplies the one-time enrollment token on the installer's standard input.
+The token never enters cloud-init user data, process arguments, the panel database or audit records.
+The installer removes its temporary token file after use.
+
+The installer downloads OpenZiti tunneler `1.20.0` and checks the pinned archive SHA-256 before installation.
+It supports Linux x86-64 and ARM64 images that meet the prerequisites.
+It starts a host-only systemd service without a TUN interface or guest route changes.
+The certificate identity stays in a root-only directory and the service starts at boot.
+
+A failed private-access installation leaves the VM available through its existing guest credentials and console.
+The service reports the enrollment failure. Select **Install VM agent** to retry.
+A lost guest-agent result triggers a status check before another enrollment attempt.
+Long guest installation calls do not block access reconciliation.
+An expired or consumed token without a usable guest identity requires service removal and creation again.
+
+## Existing VMs and Windows
+
+A service administrator can add a service under **Remote access → OpenZiti**.
+For an existing Linux QEMU VM, select **Install VM agent** for the same guest-agent installation flow.
+Windows and container agent installation remain manual in this release.
+Download **VM enrollment** only for the intended machine and install its platform's OpenZiti tunneler.
+
+For a compatible Linux tunneler:
 
 ```bash
 umask 077
-ziti-edge-tunnel enroll --jwt downloaded-enrollment.jwt --identity identity.json
+ziti-edge-tunnel enroll --jwt machine-enrollment.jwt --identity identity.json
 ```
 
-Store the resulting identity in the tunneler's restricted identity directory
-and follow that platform's service instructions. Remove the enrollment file
-after successful use. The enrollment is a one-time credential. An expired or
-consumed enrollment requires a new identity. GUI tunnelers can import enrollment
-files through their native enrollment flow.
+Protect the resulting identity and remove the enrollment file after use.
+Machine enrollment downloads require a current service management permission and use uncached authenticated responses.
+User access never returns a certificate enrollment token.
 
-Enrollment JWTs are returned only in authenticated, uncached responses and
-downloaded as files. The panel does not retain them in its database, audit log,
-browser storage or page markup. The controller retains unused enrollment
-credentials until consumption or expiry.
+## User browser login
+
+1. Sign in to the panel through Authentik and select **Enable my SSO access** for the VM service.
+2. Add the public controller URL in a current OpenZiti client.
+3. Select the Authentik provider and complete browser authentication.
+4. Connect to the service's private hostname with an ordinary SSH or Remote Desktop client.
+
+The Linux flow passed checks with `ziti-edge-tunnel 1.20.0`.
+For a running Linux tunneler, create a bootstrap identity without certificate enrollment:
+
+```bash
+ziti-edge-tunnel add --identity rcadea --url https://ctrl01.rcadea.cloud --enroll-to-mode none
+```
+
+Use the client's **Authenticate** action and select **RCADEA Authentik**.
+For CLI authentication, substitute the actual identity file path:
+
+```bash
+ziti-edge-tunnel ext-jwt-login --identity /path/to/rcadea.json --provider 'RCADEA Authentik'
+```
+
+The client opens or returns the browser URL. It keeps its tokens on the user's device.
+The panel never receives the OpenZiti client's access or refresh tokens.
 
 ## Access lifetime and revocation
 
-Personal device access lasts at most 15 minutes and cannot outlive the current
-OIDC authorization lease. Renew before expiry with a current authorized panel
-session. An expired access identity must be revoked and enrolled again. The
-hosting identity is separate and remains until its service is removed.
+Each VM-service grant lasts at most 15 minutes, bounded by the panel's current OIDC authorization lease.
+Renew it with a current authorized panel session.
+Network token refresh does not extend the panel's VM-service grant.
+Re-enabling an expired grant reuses the same directory identity mapping and needs no user certificate.
+Revoking a grant removes that service from all of the user's devices.
+Other current grants remain valid.
 
-The panel checks access periodically, normally every 30 seconds. It removes
-device policies and identities after expiry, membership removal, disabled
-accounts or revoked VM permissions. It removes services if the customer, VM
-boundary or provider is disabled or removed. Each policy uses exact service
-and identity IDs, with only the configured customer router role.
+The panel normally reconciles access every 30 seconds.
+It revokes grants after expiry, membership removal, disabled accounts or loss of VM permissions.
+Directory claim changes take effect when the panel refreshes or expires that authorization lease.
+A controller outage can delay removal beyond the local lease.
+Existing connections do not necessarily close when an OIDC token expires or an Authentik browser session ends.
+This release does not promise immediate revocation during outages.
 
-Revocation requires a reachable controller. A controller outage can delay
-revocation beyond the recorded lease, including access held by enrolled
-devices. The local expiry is not a controller-enforced network TTL. Do not
-offer this pilot as an immediate-revocation SLA. Pending revocations remain
-visible and are retried after connectivity returns. Disabling enrollment starts
-revocation. It does not prove that every remote connection ended.
+Disabling the provider starts durable service and identity revocation.
+Pending cleanup remains visible and retries after controller recovery.
+The panel also removes legacy personal certificate grants during reconciliation.
+VM deletion, transfer, reinstall and restore remain blocked while services or setup operations exist.
+Remove the services first.
 
-VM deletion, customer transfer, reinstall and restore are blocked while managed
-services or their setup operations remain. Remove services first. This avoids
-carrying service identities into a different customer or replacement VM.
+## Recovery
 
-## Recovery and operations
+The panel reserves object names before controller creation requests.
+It recovers a lost response only when the name and ownership tags match.
+Use **Retry revocations** after controller connectivity returns.
+An ambiguous creation outcome or ownership mismatch requires provider inventory review.
+Do not remove database records to hide a failed revocation.
 
-The panel reserves unique object names before controller creation calls. A
-lost response retains its local record. Retrying the service setup recovers an
-existing object only if its exact name, panel instance tag and owner tag match.
-Restarting the panel preserves these records.
+Back up the controller, signing keys, machine identities, Authentik configuration and panel database.
+Review inventories before combining database backups from different times.
+Run one panel process per database.
 
-Use **Retry revocations** after restoring controller connectivity. Do not edit
-object ownership tags or manually remove database rows to clear failures. For
-an ambiguous creation outcome with no matching remote object, stop changes and
-inspect the dedicated controller inventory and audit history. Check that the
-original request can no longer complete before reconciling or removing its
-reserved local object record. A failed ownership check requires provider review.
-
-Back up the dedicated controller state, signing keys, TLS material and panel
-database. Avoid restoring an old panel snapshot against a newer controller
-without an inventory review: objects created after that snapshot can remain
-outside the restored panel's records. Use unique panel databases per deployment.
-do not run multiple independent panel processes against the same database.
-
-Headscale and Tailscale continue to use the existing guest-agent integration
-and `TAILSCALE_ENABLED` runtime gate. Their provider selector is also available
-under **Private Access → Headscale**. WireGuard uses the existing gateway and
-customer-subnet environment settings. This feature changes none of those guest
-network configurations.
+Headscale and Tailscale retain their guest-agent integration and `TAILSCALE_ENABLED` runtime gate.
+WireGuard retains its gateway and customer-subnet settings.
+OpenZiti does not change those guest networks or enable zrok application sharing.

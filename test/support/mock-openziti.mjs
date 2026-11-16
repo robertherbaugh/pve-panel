@@ -1,37 +1,80 @@
-import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import http from "node:http";
+import { randomUUID } from "node:crypto";
+export const mockSsoSettings = (ziti, issuer) => ({
+  clientUrl: ziti.url,
+  panelIssuer: issuer,
+  jwtSignerId: "authentik-signer",
+  userAuthPolicyId: "sso-users",
+  hostAuthPolicyId: "cert-machines",
+  autoProvision: false,
+});
 export async function startMockZiti() {
   const objects = new Map(),
     calls = [],
-    token = 'controller-session-not-an-enrollment',
-    secret = 'management-secret-not-in-database';
+    token = "controller-session-not-an-enrollment",
+    secret = "management-secret-not-in-database";
   for (const type of [
-    'identities',
-    'configs',
-    'services',
-    'service-policies',
-    'edge-router-policies',
-    'service-edge-router-policies',
+    "identities",
+    "configs",
+    "services",
+    "service-policies",
+    "edge-router-policies",
+    "service-edge-router-policies",
+    "external-jwt-signers",
+    "auth-policies",
   ])
     objects.set(type, new Map());
+  objects.get("external-jwt-signers").set("authentik-signer", {
+    id: "authentik-signer",
+    name: "RCADEA Authentik",
+    enabled: true,
+    claimsProperty: "sub",
+    useExternalId: true,
+    issuer: "https://auth.rcadea.cloud/application/o/rcadea-openziti/",
+    audience: "rcadea-customer-openziti",
+    jwksEndpoint:
+      "https://auth.rcadea.cloud/application/o/rcadea-openziti/jwks/",
+    externalAuthUrl: "https://auth.rcadea.cloud/application/o/rcadea-openziti/",
+    clientId: "rcadea-customer-openziti",
+    enrollToCertEnabled: false,
+    enrollToTokenEnabled: false,
+  });
+  objects.get("auth-policies").set("sso-users", {
+    id: "sso-users",
+    primary: {
+      cert: { allowed: false },
+      updb: { allowed: false },
+      extJwt: { allowed: true, allowedSigners: ["authentik-signer"] },
+    },
+    secondary: { requireExtJwtSigner: "authentik-signer" },
+  });
+  objects.get("auth-policies").set("cert-machines", {
+    id: "cert-machines",
+    primary: {
+      cert: { allowed: true, allowExpiredCerts: false },
+      updb: { allowed: false },
+      extJwt: { allowed: false },
+    },
+    secondary: {},
+  });
   let failDelete = false,
     redirect = false,
     invalidOwner = false,
     dropCreateType = null,
     pauseCreate = null;
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://127.0.0.1'),
-      path = url.pathname.replace('/edge/management/v1', ''),
-      parts = path.split('/').filter(Boolean);
-    let raw = '';
+    const url = new URL(req.url, "http://127.0.0.1"),
+      path = url.pathname.replace("/edge/management/v1", ""),
+      parts = path.split("/").filter(Boolean);
+    let raw = "";
     for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : null;
     calls.push({ method: req.method, path, body });
     const send = (status, data) => {
       const total = Array.isArray(data) ? data.length : 1,
-        offset = Number(url.searchParams.get('offset') || 0),
-        limit = Number(url.searchParams.get('limit') || 100);
-      res.writeHead(status, { 'content-type': 'application/json' });
+        offset = Number(url.searchParams.get("offset") || 0),
+        limit = Number(url.searchParams.get("limit") || 100);
+      res.writeHead(status, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
           data: Array.isArray(data) ? data.slice(offset, offset + limit) : data,
@@ -40,44 +83,44 @@ export async function startMockZiti() {
       );
     };
     if (redirect) {
-      res.writeHead(302, { location: 'http://127.0.0.1:9/leak' });
+      res.writeHead(302, { location: "http://127.0.0.1:9/leak" });
       res.end();
       return;
     }
-    if (path === '/authenticate') {
+    if (path === "/authenticate") {
       if (body?.password !== secret) return send(401, null);
-      return send(200, { token, identity: { id: 'admin' } });
+      return send(200, { token, identity: { id: "admin" } });
     }
-    if (req.headers['zt-session'] !== token) return send(401, null);
-    if (path === '/current-identity')
-      return send(200, { id: 'admin', isAdmin: true });
-    if (path === '/current-api-session' && req.method === 'DELETE')
+    if (req.headers["zt-session"] !== token) return send(401, null);
+    if (path === "/current-identity")
+      return send(200, { id: "admin", isAdmin: true });
+    if (path === "/current-api-session" && req.method === "DELETE")
       return send(200, {});
-    if (path === '/config-types')
+    if (path === "/config-types")
       return send(200, [
-        { id: 'host-type', name: 'host.v1' },
-        { id: 'intercept-type', name: 'intercept.v1' },
+        { id: "host-type", name: "host.v1" },
+        { id: "intercept-type", name: "intercept.v1" },
       ]);
-    if (path === '/edge-routers')
+    if (path === "/edge-routers")
       return send(200, [
         {
-          id: 'customer-router',
+          id: "customer-router",
           isOnline: true,
-          roleAttributes: ['rcadea-customers'],
+          roleAttributes: ["rcadea-customers"],
         },
       ]);
     const bucket = objects.get(parts[0]);
     if (!bucket) return send(404, null);
-    if (req.method === 'GET' && parts.length === 1) {
+    if (req.method === "GET" && parts.length === 1) {
       const name = /name="([^"]+)"/.exec(
-        url.searchParams.get('filter') || '',
+        url.searchParams.get("filter") || "",
       )?.[1];
       return send(
         200,
         [...bucket.values()].filter((o) => !name || o.name === name),
       );
     }
-    if (req.method === 'GET') {
+    if (req.method === "GET") {
       const o = bucket.get(parts[1]);
       return send(
         o ? 200 : 404,
@@ -85,19 +128,19 @@ export async function startMockZiti() {
           ? {
               ...o,
               ...(invalidOwner
-                ? { tags: { panelInstance: 'another-panel' } }
+                ? { tags: { panelInstance: "another-panel" } }
                 : {}),
             }
           : null,
       );
     }
-    if (req.method === 'POST') {
+    if (req.method === "POST") {
       if (pauseCreate) await pauseCreate;
       if ([...bucket.values()].some((o) => o.name === body.name))
         return send(409, null);
       const id = randomUUID(),
         o = { ...body, id };
-      if (parts[0] === 'identities')
+      if (parts[0] === "identities" && body.enrollment?.ott)
         o.enrollment = {
           ott: {
             jwt: `secret-enrollment-${id}`,
@@ -112,14 +155,14 @@ export async function startMockZiti() {
       }
       return send(201, { id });
     }
-    if (req.method === 'DELETE') {
+    if (req.method === "DELETE") {
       if (failDelete) return send(503, { message: secret });
       const had = bucket.delete(parts[1]);
       return send(had ? 200 : 404, {});
     }
     send(400, null);
   });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
   return {
     url: `http://127.0.0.1:${server.address().port}`,
     secret,

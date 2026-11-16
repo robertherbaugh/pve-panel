@@ -343,6 +343,13 @@ CREATE TABLE IF NOT EXISTS openziti_objects (
 CREATE INDEX IF NOT EXISTS openziti_services_vm ON openziti_services(vmid);
 CREATE INDEX IF NOT EXISTS openziti_grants_service ON openziti_grants(service_id,user_id);
 CREATE INDEX IF NOT EXISTS openziti_objects_owner ON openziti_objects(owner_id);`);
+addColumn('openziti_grants', 'identity_owner', 'TEXT');
+addColumn('openziti_services', 'host_state', "TEXT NOT NULL DEFAULT 'manual'");
+addColumn('openziti_services', 'host_error', 'TEXT');
+db.exec(`CREATE TABLE IF NOT EXISTS openziti_user_identities (
+ user_id INTEGER PRIMARY KEY, owner_id TEXT UNIQUE NOT NULL, external_id TEXT UNIQUE NOT NULL,
+ issuer TEXT NOT NULL, auth_policy_id TEXT NOT NULL
+);`);
 
 const insertAudit = db.prepare(
   'INSERT INTO audit_log (user_id, vmid, action, detail, ip, customer_id) VALUES (?, ?, ?, ?, ?, ?)'

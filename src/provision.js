@@ -9,6 +9,8 @@ import { resolveOffering, selectPlacement, checkOfferingRevision, verifyComputeD
 import { beginOperation, priorRequest, requestHash, updateOperation, completeOperation, operationById, operationCredentials, pendingOperations, releaseCompute, assertComputeIdle, computeManaged, operationStep, setOperationStep, releaseStaging, allocationFor } from './compute-state.js';
 import { capacityLocks,capacityBusy } from './capacity.js';
 import { assertNoPrivateAccess } from './private-access-guard.js';
+import { zitiSettings } from './openziti-controller.js';
+import { provisionZitiHost } from './openziti-access.js';
 import { customerById, requireCustomer } from './tenancy.js';
 import {
   pve, clusterGuests, locateTemplate, waitTask, bootDiskKey, diskSizeGb, serial,
@@ -173,9 +175,12 @@ function applySetupRules(spec, offered) {
   spec.setup = offered.setup;
 }
 
-async function checkImageLogin(offered, tpl) {
+async function checkImageLogin(offered, tpl, spec) {
   if (offered.setup !== 'cloudinit') return;
   const image = await pve.get(`/nodes/${encodeURIComponent(tpl.node)}/qemu/${tpl.vmid}/config`);
+  spec.openzitiProvision = zitiSettings().enabled && zitiSettings().autoProvision;
+  if (spec.openzitiProvision && !/^(1|enabled=1)(,|$)/.test(String(image.agent ?? '')))
+    throw new ProvisionError(400, 'Automatic OpenZiti enrollment requires an image with the QEMU guest agent enabled');
   if (/(^|,)user=/.test(image.cicustom ?? '')) throw new ProvisionError(400, 'This image has custom cloud-init user data that overrides sign-in settings. The provider must prepare a compatible image.');
   if (!Object.entries(image).some(([k,v]) => /^(ide|scsi|sata)\d+$/.test(k) && String(v).includes('cloudinit'))) throw new ProvisionError(400, 'The provider must add a cloud-init drive to this image before it can configure sign-in.');
 }
@@ -238,7 +243,7 @@ export async function createServer(req, spec) {
     }
 
     applySetupRules(spec, offered);
-    await checkImageLogin(offered, tpl);
+    await checkImageLogin(offered, tpl, spec);
 
     // Quota
     const limits = limitsOf(account);
@@ -443,6 +448,11 @@ async function finishCreate(actor, node, vmid, cloneUpid, spec, tplRow, net, {
     }
 
     const ready = () => db.prepare("UPDATE vms SET state = 'ready', error = NULL, progress = NULL WHERE vmid = ?").run(vmid);
+    if (!windows && spec.openzitiProvision) {
+      progress('Enrolling private access');
+      try { await provisionZitiHost(actor, node, vmid); }
+      catch { audit(actor, vmid, 'openziti_machine_enrollment_failed'); }
+    }
     if (operationId) completeOperation(operationId, ready); else ready();
     audit(actor, vmid, done);
   } catch (err) {
@@ -550,7 +560,7 @@ export async function reinstallServer(req, row, input) {
     }
     applySetupRules(spec, offered);
     const tpl = isContainer ? null : await locateTemplate(spec.templateId);
-    await checkImageLogin(offered, tpl);
+    await checkImageLogin(offered, tpl, spec);
     const templateRef = isContainer ? spec.templateId : tpl.vmid;
     let destinationPool=config.pve.pool;
     if(customer.pools.length) {
