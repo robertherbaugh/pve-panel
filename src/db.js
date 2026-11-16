@@ -351,10 +351,29 @@ db.exec(`CREATE TABLE IF NOT EXISTS openziti_user_identities (
  user_id INTEGER PRIMARY KEY, owner_id TEXT UNIQUE NOT NULL, external_id TEXT UNIQUE NOT NULL,
  issuer TEXT NOT NULL, auth_policy_id TEXT NOT NULL
 );`);
-
 db.exec(`CREATE TABLE IF NOT EXISTS network_authorizations (
  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
  issuer TEXT NOT NULL, subject TEXT NOT NULL, claims TEXT NOT NULL, updated_at INTEGER NOT NULL
+);`);
+db.exec(`CREATE TABLE IF NOT EXISTS zrok_accounts (
+ id TEXT PRIMARY KEY, customer_id INTEGER NOT NULL, vmid INTEGER, user_id INTEGER,
+ email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, token TEXT, environment TEXT,
+ bootstrap TEXT, namespace_granted INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending', error TEXT,
+ UNIQUE(vmid), UNIQUE(customer_id,user_id),
+ CHECK((vmid IS NULL) != (user_id IS NULL))
+);
+CREATE TABLE IF NOT EXISTS zrok_shares (
+ id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES zrok_accounts(id),
+ customer_id INTEGER NOT NULL, vmid INTEGER NOT NULL, user_id INTEGER NOT NULL,
+ mode TEXT NOT NULL, port INTEGER NOT NULL, name TEXT NOT NULL,
+ token TEXT, generation TEXT, endpoints TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1,
+ state TEXT NOT NULL DEFAULT 'pending', error TEXT, created_at INTEGER NOT NULL,
+ UNIQUE(vmid,mode,port)
+);
+CREATE TABLE IF NOT EXISTS zrok_grants (
+ share_id TEXT NOT NULL REFERENCES zrok_shares(id) ON DELETE CASCADE, applied_token TEXT,
+ account_id TEXT NOT NULL REFERENCES zrok_accounts(id),
+ PRIMARY KEY(share_id,account_id)
 );`);
 
 const insertAudit = db.prepare(

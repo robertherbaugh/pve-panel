@@ -76,7 +76,7 @@ test("every provider is visible when all enrollment features are disabled; admin
     ["openziti", "headscale", "tailscale", "wireguard", "zrok"],
   );
   assert(r.json.providers.every((p) => !p.enabled));
-  assert.equal(r.json.providers.find((p) => p.id === "zrok").supported, false);
+  assert.equal(r.json.providers.find((p) => p.id === "zrok").supported, true);
   assert.equal((await alice.get("/api/admin/private-access")).status, 404);
   assert.equal(
     (await stack.admin().get("/api/admin/private-access")).status,

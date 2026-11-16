@@ -237,6 +237,7 @@ export function customerDeletionPlan(id) {
     ['Compute allocations', optionalCount('compute_allocations', 'AND ended_at IS NULL')],
     ['Reserved backup storage', optionalCount('compute_backup_reservations', "AND state!='released'")],
     ['OpenZiti services', optionalCount('openziti_services', '')],
+    ['zrok sharing accounts', optionalCount('zrok_accounts', '')],
     ['Assigned VMs', count('vms')],
     ['Private networks', count('networks')],
     ['VPN devices', count('vpn_devices')],

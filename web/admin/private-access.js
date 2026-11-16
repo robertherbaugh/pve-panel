@@ -1,3 +1,4 @@
+import { renderSharingAdmin } from './sharing.js';
 import { markedSections } from "./sections.js";
 import { renderRemoteAccess } from "./compute-remote.js";
 import { loading } from "/shared/ui.js";
@@ -43,7 +44,8 @@ export function renderPrivateAccess(
  <section data-section="Tailscale">${card(provider("tailscale"))}<p>Use the control server selector in Headscale to choose Tailscale or Headscale for new VM connections.</p><p class="hint">VM enrollment runtime: ${data.tailscaleRuntimeEnabled ? "Enabled" : "Disabled"}.</p>
  <div class="table-wrap"><table class="table" data-admin-table="Private VM connections"><thead><tr><th>Customer</th><th>VM ID</th><th>Provider</th><th>Address</th><th>State</th></tr></thead><tbody>${data.connections.map((c) => `<tr><td>${esc(c.email)}</td><td>${c.vmid}</td><td>${esc(c.provider)}</td><td>${esc(c.ip || "—")}</td><td>${esc(c.state)}</td></tr>`).join("")}</tbody></table></div></section>
  <section data-section="WireGuard">${card(provider("wireguard"))}<dl class="specs"><div><dt>Gateway VM</dt><dd>${data.wireguard.gatewayVmid || "Not configured"}</dd></div><div><dt>Endpoint</dt><dd>${esc(data.wireguard.endpoint || "Not configured")}</dd></div><div><dt>Customer subnet integration</dt><dd>${data.wireguard.networksEnabled ? "Enabled" : "Disabled"}</dd></div></dl><p class="hint">This legacy gateway requires VPN_ENABLED, VPN_GATEWAY_VMID, VPN_ENDPOINT and CUSTOMER_NETWORKS. Other providers do not need Proxmox SDN.</p><div data-wireguard-devices></div></section>
- <section data-section="zrok">${card(provider("zrok"))}<p>zrok application sharing is a separate future integration. OpenZiti enrollment does not enable public application sharing.</p></section>`;
+ <section data-section="zrok">${card(provider("zrok"))}<div class="section-stack" data-sharing-admin></div></section>`;
+  renderSharingAdmin(host.querySelector("[data-sharing-admin]"),data.zrok,reload);
   markedSections(host, "Private access");
   renderRemoteAccess(host.querySelector("[data-headscale-settings]"), {
     api,

@@ -1,7 +1,7 @@
 # Private access with Authentik and OpenZiti
 
 The **Private Access** page shows OpenZiti, Headscale, Tailscale, WireGuard and zrok.
-Each provider reports its configuration and enrollment state. zrok remains a planned integration.
+Each provider reports its configuration and enrollment state. See [self-hosted application sharing](zrok.md) for zrok setup.
 
 OpenZiti connects users to individual VM services without a customer subnet or Proxmox SDN.
 The supported services are SSH on TCP 22 and Remote Desktop on TCP 3389.
@@ -178,4 +178,3 @@ Run one panel process per database.
 Headscale and Tailscale retain their guest-agent integration and `TAILSCALE_ENABLED` runtime gate.
 WireGuard retains its gateway and customer-subnet settings.
 OpenZiti does not change those guest networks or enable zrok application sharing.
-

@@ -10,7 +10,7 @@ import { customerContext, customerById, legacyPolicyCustomer } from './tenancy.j
 export const ACTIONS = Object.freeze([
   'view', 'power', 'console', 'snapshot.create', 'snapshot.delete', 'snapshot.rollback',
   'backup.read', 'backup.create', 'backup.delete', 'backup.restore', 'backup.files', 'backup.schedule',
-  'updates.read', 'updates.run', 'resize', 'reinstall', 'delete', 'extend', 'tailscale.read', 'tailscale.manage', 'private-access.read', 'private-access.manage', 'clone',
+  'updates.read', 'updates.run', 'resize', 'reinstall', 'delete', 'extend', 'tailscale.read', 'tailscale.manage', 'private-access.read', 'private-access.manage', 'sharing.read', 'sharing.manage', 'clone',
 ]);
 export const DEFAULT_POLICY = Object.freeze({ version: 1, enabled: false, allowedDomains: [], rules: [] });
 const KEY = 'access_policy';
@@ -186,7 +186,7 @@ export async function authorizedRow(req,vmid,action='view') {
     const spec=JSON.parse(row.spec??'{}');
     if(!cloneRules(req).some(r=>r.id===spec.accessRuleId&&r.clone.pool===spec.pool)) throw missing();
   }
-  if(!row&&!['view','power','console','snapshot.create','snapshot.delete','snapshot.rollback','delete','private-access.read','private-access.manage'].includes(action)) throw missing();
+  if(!row&&!['view','power','console','snapshot.create','snapshot.delete','snapshot.rollback','delete','private-access.read','private-access.manage','sharing.read','sharing.manage'].includes(action)) throw missing();
   const deletion = db.prepare('SELECT state,error FROM vm_deletions WHERE vmid=? AND finished_at IS NULL').get(vmid);
   return row??{vmid,customer_id:customer.id,user_id:null,type:guest.type,state:deletion ? deletion.state === 'review' ? 'failed' : 'deleting' : 'ready',error:deletion?.error,label:null,created_by_customer:0,access_managed:1};
 }
@@ -216,7 +216,7 @@ export async function capabilities(req,row,guest) {
       const spec=JSON.parse(row.spec??'{}');
       if(!cloneRules(req).some(r=>r.id===spec.accessRuleId&&r.clone.pool===spec.pool)) return false;
     }
-    if(row.user_id===null&&!['view','power','console','snapshot.create','snapshot.delete','snapshot.rollback','delete','private-access.read','private-access.manage'].includes(a)) return false;
+    if(row.user_id===null&&!['view','power','console','snapshot.create','snapshot.delete','snapshot.rollback','delete','private-access.read','private-access.manage','sharing.read','sharing.manage'].includes(a)) return false;
     return true;
   });
 }

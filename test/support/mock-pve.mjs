@@ -423,6 +423,12 @@ export async function startMockPve({ port = 0 } = {}) {
       log('AGENT EXEC', vmid, JSON.stringify(cmd)); const pid = ++pidSeq; const script = cmd.join(' ');
       const encIdx = cmd.indexOf('-EncodedCommand'); const decoded = encIdx >= 0 ? Buffer.from(cmd[encIdx+1], 'base64').toString('utf16le') : '';
       if (decoded) log('AGENT SCRIPT', vmid, decoded.includes('Set-NetIPInterface') ? '[reset network to DHCP]' : decoded.includes('Get-NetIPAddress') ? '[list IPv4]' : decoded.slice(0,60));
+      if (cmd[0] === '/bin/bash' && script.includes('rcadea-zrok')) {
+        vm.zrokInput=stdin;vm.zrokCommand=script;
+        if(vm.zrokInstallGate) await vm.zrokInstallGate;
+        execs.set(String(pid),{out:'',at:Date.now(),code:vm.zrokFailInstall ? 1:0,err:vm.zrokFailInstall ? stdin:'',script});
+        return send(res,{pid});
+      }
       if (cmd[0] === '/bin/bash' && script.includes('rcadea-ziti')) {
         let code=0;
         if(script.includes("scratch=$(mktemp")) {
