@@ -20,11 +20,11 @@ export async function renderOpenZiti(host, { vmid, manage, current }) {
   if (!current()) return;
   host.innerHTML = `<h2>OpenZiti service access</h2><p><span class="pill ${data.enabled ? "pill-running" : ""}">${data.enabled ? "Enabled" : "Disabled"}</span> · ${data.configured ? "Controller configured" : "Controller not configured"}</p>
  <p class="muted">Connect to SSH or Remote Desktop without exposing the VM’s subnet. Your VM login credentials still apply.</p>
- <p class="hint">Your device signs in through Authentik. The VM agent uses a machine certificate, installed during provisioning when enabled. Guest SSH or Windows credentials still apply.</p>
- ${manage ? `<form class="row" data-add-service><label>VM service<select name="kind"><option value="ssh">SSH (TCP 22)</option><option value="rdp">Remote Desktop (TCP 3389)</option></select></label><button class="btn primary" ${data.enabled ? "" : "disabled"}>Add or retry service</button></form>` : ""}
- <div class="security-card"><h3>Connect with Authentik</h3><p>In a current OpenZiti client, add the controller URL below and sign in through Authentik. One user identity supports all of your granted services.</p><p class="mono selectable">${esc(data.clientUrl || "Controller not configured")}</p><p class="hint">For Linux with a running OpenZiti tunneler:</p><pre class="mono selectable">ziti-edge-tunnel add --identity rcadea --url ${esc(data.clientUrl)} --enroll-to-mode none</pre></div>
+ <p class="hint">Your device signs in through SSO. The VM agent uses a machine certificate, installed during provisioning when enabled. Guest SSH or Windows credentials still apply.</p>
+ ${manage ? `<form class="row private-access-form" data-add-service><label>VM service<select name="kind"><option value="ssh">SSH (TCP 22)</option><option value="rdp">Remote Desktop (TCP 3389)</option></select></label><button class="btn primary" ${data.enabled ? "" : "disabled"}>Add or retry service</button></form>` : ""}
+ <div class="security-card"><h3>Connect with SSO</h3><p>In a current OpenZiti client, add the controller URL below and sign in through SSO. One user identity supports all of your granted services.</p><p class="mono selectable">${esc(data.clientUrl || "Controller not configured")}</p><p class="hint">For Linux with a running OpenZiti tunneler:</p><pre class="mono selectable">ziti-edge-tunnel add --identity rcadea --url ${esc(data.clientUrl)} --enroll-to-mode none</pre></div>
  <p class="hint">Each VM-service grant lasts up to 15 minutes, bounded by current SSO authorization. Renew before expiry. Revocation is reconciled every 30 seconds and requires controller connectivity.</p>
- <div class="table-wrap"><table class="table"><thead><tr><th>Service</th><th>Private address</th><th>Status</th><th>Actions</th></tr></thead><tbody>${data.services
+ <div class="table-wrap"><table class="table private-access-table"><thead><tr><th>Service</th><th>Private address</th><th>Status</th><th>Actions</th></tr></thead><tbody>${data.services
    .map(
      (
        s,
@@ -35,7 +35,7 @@ export async function renderOpenZiti(host, { vmid, manage, current }) {
    )
    .join("")}</tbody></table></div>
  ${!data.services.length ? '<p class="muted">No OpenZiti services have been created for this VM.</p>' : ""}
- <div data-enrollment-result role="status"></div>`;
+ <div class="section-stack" data-enrollment-result role="status"></div>`;
   async function action(
     button,
     path,

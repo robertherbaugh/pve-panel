@@ -700,6 +700,9 @@ dialog#delete-user { max-width: min(560px, calc(100vw - 32px)); }
 .security-card-copy { display: grid; gap: 8px; min-width: 0; }
 .security-card-split > .security-card-copy { flex: 1 1 260px; }
 .security-card p { margin: 0; max-width: 62ch; }
+.security-card pre.selectable, [data-enrollment-result] pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.private-access-form { align-items: end; }
+.private-access-table { min-width: 760px; }
 .warn-text { color: color-mix(in srgb, var(--warn) 50%, var(--ink)); font-weight: 600; }
 .reset-box { padding: 14px; border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line)); border-radius: var(--r-md); display: grid; gap: 10px; justify-items: start; }
 .reset-box p { margin: 0; }

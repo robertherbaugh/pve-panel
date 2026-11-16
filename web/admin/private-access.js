@@ -25,11 +25,11 @@ export function renderPrivateAccess(
  <label>Customer edge router role<input name="routerRole" required value="${esc(z.routerRole)}"></label>
  <label>Public client HTTPS address<input type="url" name="clientUrl" value="${esc(z.clientUrl)}" placeholder="https://ctrl01.rcadea.cloud"></label>
  <label>Panel OIDC issuer<input type="url" name="panelIssuer" value="${esc(z.panelIssuer)}" placeholder="https://auth.rcadea.cloud/application/o/pve-panel/"></label>
- <label>Authentik JWT signer ID<input name="jwtSignerId" value="${esc(z.jwtSignerId)}"></label>
+ <label>SSO JWT signer ID<input name="jwtSignerId" value="${esc(z.jwtSignerId)}"></label>
  <label>User SSO authentication policy ID<input name="userAuthPolicyId" value="${esc(z.userAuthPolicyId)}"></label>
  <label>Machine certificate authentication policy ID<input name="hostAuthPolicyId" value="${esc(z.hostAuthPolicyId)}"></label>
  <label class="check"><input type="checkbox" name="autoProvision" ${z.autoProvision ? "checked" : ""}>Enroll new Linux VMs during provisioning</label>
- <p class="hint">Users authenticate through Authentik. Machine agents use certificates. Automatic Linux enrollment requires the QEMU guest agent, Python 3 and systemd in the image, plus VM.GuestAgent.Unrestricted on the destination pool. It runs after cloud-init and does not change guest login credentials.</p>
+ <p class="hint">Users authenticate through SSO. Machine agents use certificates. Automatic Linux enrollment requires the QEMU guest agent, Python 3 and systemd in the image, plus VM.GuestAgent.Unrestricted on the destination pool. It runs after cloud-init and does not change guest login credentials.</p>
  <label>Controller CA certificates (optional)<textarea name="caPem" rows="4" placeholder="PEM certificate bundle">${esc(z.caPem)}</textarea></label>
  <p class="hint">Use the dedicated customer controller. TLS certificate verification stays on. The database encrypts the management password.</p>
  <p class="hint">Save configuration with enrollment disabled, then test the controller before enabling enrollment. Disabling enrollment revokes managed services and access identities.</p>

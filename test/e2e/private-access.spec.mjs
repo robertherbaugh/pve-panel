@@ -127,9 +127,10 @@ test("all provider states are visible while disabled and configuration drafts su
     });
 });
 
-test("customers use machine enrollment and Authentik user access without a personal certificate download", async ({
+test("customers use machine enrollment and SSO user access without a personal certificate download", async ({
   page,
 }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
   await signIn(page, customer, stack.customerUrl);
   await page.locator('.unit[data-vmid="101"]').click();
   await page.locator("[data-tab=remote]").click();
@@ -158,11 +159,57 @@ test("customers use machine enrollment and Authentik user access without a perso
     .click();
   expect(downloads).toHaveLength(0);
   await expect(
-    page.getByRole("heading", { name: "Connect with Authentik" }),
+    page.getByRole("heading", { name: "Connect with SSO" }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Renew access", exact: true }),
   ).toBeEnabled();
+  const form = page.locator("[data-add-service]");
+  await expect(page.locator("[data-remote-body]")).not.toContainText(
+    "Authentik",
+  );
+  const instructions = page.locator("[data-remote-body] > .security-card");
+  const formBox = await form.boundingBox();
+  const cardBox = await instructions.boundingBox();
+  expect(cardBox.y - formBox.y - formBox.height).toBeGreaterThanOrEqual(16);
+  expect(cardBox.y - formBox.y - formBox.height).toBeLessThanOrEqual(32);
+  const selectBox = await form.locator("select").boundingBox();
+  const buttonBox = await form.getByRole("button").boundingBox();
+  expect(
+    Math.abs(selectBox.y + selectBox.height - buttonBox.y - buttonBox.height),
+  ).toBeLessThanOrEqual(1);
+  const headingBox = await instructions.getByRole("heading").boundingBox();
+  const descriptionBox = await instructions.locator("p").first().boundingBox();
+  expect(
+    descriptionBox.y - headingBox.y - headingBox.height,
+  ).toBeGreaterThanOrEqual(16);
+  expect(
+    descriptionBox.y - headingBox.y - headingBox.height,
+  ).toBeLessThanOrEqual(24);
+  if (process.env.LAYOUT_SCREENSHOTS) {
+    await expect(page.locator(".toast")).toHaveCount(0);
+    await page.screenshot({
+      path: `${process.env.LAYOUT_SCREENSHOTS}/customer-openziti-spacing.png`,
+      fullPage: true,
+    });
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  const command = instructions.locator("pre");
+  expect(
+    await command.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth,
+    ),
+  ).toBe(true);
+  if (process.env.LAYOUT_SCREENSHOTS)
+    await page.screenshot({
+      path: `${process.env.LAYOUT_SCREENSHOTS}/customer-openziti-mobile-spacing.png`,
+      fullPage: true,
+    });
   expect(await page.content()).not.toContain("secret-enrollment-");
   expect(
     await page.evaluate(

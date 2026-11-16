@@ -272,7 +272,7 @@ test("local sessions cannot enroll a user certificate or enable SSO grants", asy
     `/api/private-access/services/${serviceId}/access`,
   );
   assert.equal(result.status, 403, result.text);
-  assert.match(result.json.error, /Authentik/);
+  assert.match(result.json.error, /SSO/);
 });
 test("one immutable SSO identity can hold two independent service grants", async () => {
   const rdp = await alice.post("/api/vms/101/private-access/services", {
