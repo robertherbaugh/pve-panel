@@ -127,6 +127,44 @@ after(async () => {
   await oidc?.close();
 });
 
+test('an OIDC access lease cannot fall back to a manual personal membership after claim expiry', async () => {
+  const owner = await stack.customerWith('legacy-oidc@example.com');
+  assert.equal(
+    (await admin.put('/api/admin/vms/102', { userId: owner.userId })).status,
+    200,
+  );
+  const session = stack.customer();
+  assert.equal(
+    (await oidc.login(session, { email: 'legacy-oidc@example.com' })).status,
+    200,
+  );
+  const created = await session.post('/api/vms/102/private-access/services', {
+    kind: 'ssh',
+  });
+  assert.equal(created.status, 200, created.text);
+  const issued = await session.post(
+    `/api/private-access/services/${created.json.id}/access`,
+  );
+  assert.equal(issued.status, 200, issued.text);
+  sql
+    .prepare('UPDATE oidc_authorizations SET expires_at=0 WHERE user_id=?')
+    .run(owner.userId);
+  assert.equal(
+    (await session.post(`/api/private-access/grants/${issued.json.id}/renew`))
+      .status,
+    403,
+  );
+  await admin.post('/api/admin/private-access/openziti/reconcile');
+  assert.equal(
+    sql.prepare('SELECT * FROM openziti_grants WHERE id=?').get(issued.json.id),
+    undefined,
+  );
+  assert.equal(
+    (await owner.del(`/api/private-access/services/${created.json.id}`)).status,
+    200,
+  );
+});
+
 test('validated groups can manage an unassigned pool VM; entitlements grant only explicit read access', async () => {
   assert.equal(
     sql.prepare('SELECT * FROM vms WHERE vmid=101').get(),

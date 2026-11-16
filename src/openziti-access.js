@@ -133,6 +133,11 @@ function enabled() {
     throw zitiError('OpenZiti enrollment is disabled', 409);
 }
 async function authorize(req, vmid, action) {
+  if (req.user?.az && !authorizationFor(req))
+    throw zitiError(
+      'Refresh your SSO authorization before using private access',
+      403,
+    );
   requireCustomer(req);
   const row = await authorizedRow(req, Number(vmid), action);
   if (row.state !== 'ready')

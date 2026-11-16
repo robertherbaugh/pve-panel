@@ -20,7 +20,7 @@ separate from infrastructure OpenZiti identities and services.
    stable advertised DNS addresses that the panel, guest VMs and customer devices
    can reach. Configure valid TLS certificates and synchronize system clocks.
 2. Protect the management API with network restrictions. The panel must reach
-   `/edge/management/v1`; customer tunnelers need the advertised client API and
+   `/edge/management/v1`. Customer tunnelers need the advertised client API and
    router listeners. The panel does not install this infrastructure or manage
    its firewall, certificates, persistence or upgrades.
 3. Create a dedicated controller administrator for the panel. The integration
@@ -34,7 +34,7 @@ separate from infrastructure OpenZiti identities and services.
    `intercept.v1` configuration types available.
 6. In **Private Access → OpenZiti**, save the controller HTTPS address,
    management credentials and router role with enrollment disabled. A private CA
-   bundle is optional. TLS verification remains enabled; redirects are rejected.
+   bundle is optional. TLS verification remains enabled. The panel rejects redirects.
 7. Test the controller, then enable enrollment within five minutes of that test.
    Changing connection settings requires another successful test. Controller and
    router-role changes are blocked while managed objects remain.
@@ -74,7 +74,7 @@ software in guest VMs or issue Headscale keys.
 3. Each user selects **Enroll my device**, then enrolls the separate personal
    identity on the device from which they will connect. An identity is scoped to
    one service and one user. Do not share identity files.
-4. Start or reload the appropriate tunnelers. Connect to the displayed private
+4. Start or reload the appropriate tunnelers. Connect to the private
    hostname using an ordinary SSH or Remote Desktop client.
 
 For a Linux tunneler that supports the `enroll` command:
@@ -85,8 +85,8 @@ ziti-edge-tunnel enroll --jwt downloaded-enrollment.jwt --identity identity.json
 ```
 
 Store the resulting identity in the tunneler's restricted identity directory
-and follow that platform's service instructions. Delete the enrollment file
-after successful use. The enrollment is a one-time credential; an expired or
+and follow that platform's service instructions. Remove the enrollment file
+after successful use. The enrollment is a one-time credential. An expired or
 consumed enrollment requires a new identity. GUI tunnelers can import enrollment
 files through their native enrollment flow.
 
@@ -113,7 +113,7 @@ revocation beyond the recorded lease, including access held by enrolled
 devices. The local expiry is not a controller-enforced network TTL. Do not
 offer this pilot as an immediate-revocation SLA. Pending revocations remain
 visible and are retried after connectivity returns. Disabling enrollment starts
-revocation; it does not prove that every remote connection has ended.
+revocation. It does not prove that every remote connection ended.
 
 VM deletion, customer transfer, reinstall and restore are blocked while managed
 services or their setup operations remain. Remove services first. This avoids
@@ -127,16 +127,16 @@ existing object only if its exact name, panel instance tag and owner tag match.
 Restarting the panel preserves these records.
 
 Use **Retry revocations** after restoring controller connectivity. Do not edit
-object ownership tags or manually delete database rows to clear failures. For
+object ownership tags or manually remove database rows to clear failures. For
 an ambiguous creation outcome with no matching remote object, stop changes and
-inspect the dedicated controller inventory and audit history. Confirm that the
+inspect the dedicated controller inventory and audit history. Check that the
 original request can no longer complete before reconciling or removing its
 reserved local object record. A failed ownership check requires provider review.
 
 Back up the dedicated controller state, signing keys, TLS material and panel
 database. Avoid restoring an old panel snapshot against a newer controller
 without an inventory review: objects created after that snapshot can remain
-outside the restored panel's records. Use unique panel databases per deployment;
+outside the restored panel's records. Use unique panel databases per deployment.
 do not run multiple independent panel processes against the same database.
 
 Headscale and Tailscale continue to use the existing guest-agent integration

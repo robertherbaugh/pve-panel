@@ -296,9 +296,8 @@ export async function checkZitiController() {
           502,
         );
       await assertScopedController(c);
-      const routers = await c.list(
-        'edge-routers',
-        `roleAttributes contains "${c.settings.routerRole}"`,
+      const routers = (await c.list('edge-routers')).filter((r) =>
+        r.roleAttributes?.includes(c.settings.routerRole),
       );
       if (!routers.some((r) => r.isOnline === true))
         throw zitiError(
