@@ -8,6 +8,7 @@ import { config } from './config.js';
 import { resolveOffering, selectPlacement, checkOfferingRevision, verifyComputeDeleted } from './compute-placement.js';
 import { beginOperation, priorRequest, requestHash, updateOperation, completeOperation, operationById, operationCredentials, pendingOperations, releaseCompute, assertComputeIdle, computeManaged, operationStep, setOperationStep, releaseStaging, allocationFor } from './compute-state.js';
 import { capacityLocks,capacityBusy } from './capacity.js';
+import { assertNoPrivateAccess } from './private-access-guard.js';
 import { customerById, requireCustomer } from './tenancy.js';
 import {
   pve, clusterGuests, locateTemplate, waitTask, bootDiskKey, diskSizeGb, serial,
@@ -495,6 +496,7 @@ function lifecycleAccount(req,row,customer) {
 }
 
 export async function reinstallServer(req, row, input) {
+  assertNoPrivateAccess(row.vmid, 'reinstalling');
   resolveSshKeys(req.account.id, input);
   assertComputeIdle(row.vmid);
   const allocation=allocationFor(row.vmid);

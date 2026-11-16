@@ -236,6 +236,7 @@ export function customerDeletionPlan(id) {
     ['Compute operations', optionalCount('compute_operations', "AND state NOT IN ('complete','cancelled')")],
     ['Compute allocations', optionalCount('compute_allocations', 'AND ended_at IS NULL')],
     ['Reserved backup storage', optionalCount('compute_backup_reservations', "AND state!='released'")],
+    ['OpenZiti services', optionalCount('openziti_services', '')],
     ['Assigned VMs', count('vms')],
     ['Private networks', count('networks')],
     ['VPN devices', count('vpn_devices')],

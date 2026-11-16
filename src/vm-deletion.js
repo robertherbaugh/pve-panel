@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { assertNoPrivateAccess } from './private-access-guard.js';
 import { db, audit } from './db.js';
 import { config } from './config.js';
 import { pve, clusterGuests, guestPath, waitTask, invalidateGuestCache, PveError } from './pve.js';
@@ -14,6 +15,7 @@ export function deletionFor(vmid) {
   return db.prepare('SELECT * FROM vm_deletions WHERE vmid=? AND finished_at IS NULL').get(vmid);
 }
 function idle(vmid, row) {
+  assertNoPrivateAccess(vmid, 'deleting');
   assertComputeIdle(vmid);
   if (['creating', 'deleting'].includes(row?.state) || activeRun(vmid) || db.prepare("SELECT 1 FROM backup_jobs WHERE vmid=? AND state IN ('queued','running')").get(vmid)) fail('Wait until the server’s current operation finishes');
 }
