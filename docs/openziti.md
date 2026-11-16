@@ -148,18 +148,13 @@ The panel never receives the OpenZiti client's access or refresh tokens.
 
 ## Access lifetime and revocation
 
-Each VM-service grant lasts at most 15 minutes, bounded by the panel's current OIDC authorization lease.
-Renew it with a current authorized panel session.
-Network token refresh does not extend the panel's VM-service grant.
-Re-enabling an expired grant reuses the same directory identity mapping and needs no user certificate.
-Revoking a grant removes that service from all of the user's devices.
-Other current grants remain valid.
+New SSO grants persist until revoked or disabled. Panel logout and browser token expiry do not remove a provisioned grant. The client must still authenticate through SSO. Machine certificates remain separate.
 
-The panel normally reconciles access every 30 seconds.
-It revokes grants after expiry, membership removal, disabled accounts or loss of VM permissions.
-Directory claim changes take effect when the panel refreshes or expires that authorization lease.
-A controller outage can delay removal beyond the local lease.
-Existing connections do not necessarily close when an OIDC token expires or an Authentik browser session ends.
+The panel rechecks current local user status, customer status, membership blocks, VM boundaries and policy every 30 seconds. Controller outages retain pending revocations for retry. Provider disable removes managed services. Legacy temporary grants retain their expiry until the user chooses **Make persistent**.
+
+The panel stores the latest validated SSO group and entitlement snapshot by immutable issuer and subject. A later signed SSO login updates that snapshot. OIDC does not push directory changes: remote group removal takes effect at the next sign-in. Disable the panel user or block customer membership for immediate local revocation. Directory synchronization is required for immediate remote group revocation. Ordinary API requests still require an unexpired browser authorization.
+
+A controller outage can delay removal. Existing connections do not necessarily close when a browser session ends.
 This release does not promise immediate revocation during outages.
 
 Disabling the provider starts durable service and identity revocation.
@@ -183,3 +178,4 @@ Run one panel process per database.
 Headscale and Tailscale retain their guest-agent integration and `TAILSCALE_ENABLED` runtime gate.
 WireGuard retains its gateway and customer-subnet settings.
 OpenZiti does not change those guest networks or enable zrok application sharing.
+

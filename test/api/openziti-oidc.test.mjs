@@ -128,7 +128,7 @@ after(async () => {
   await oidc?.close();
 });
 
-test("an OIDC access lease cannot fall back to a manual personal membership after claim expiry", async () => {
+test("expired browser claims cannot perform new actions, but provisioned access survives logout", async () => {
   const owner = await stack.customerWith("legacy-oidc@example.com");
   assert.equal(
     (await admin.put("/api/admin/vms/102", { userId: owner.userId })).status,
@@ -156,10 +156,10 @@ test("an OIDC access lease cannot fall back to a manual personal membership afte
     403,
   );
   await admin.post("/api/admin/private-access/openziti/reconcile");
-  assert.equal(
-    sql.prepare("SELECT * FROM openziti_grants WHERE id=?").get(issued.json.id),
-    undefined,
-  );
+  assert.equal(sql.prepare("SELECT persistent FROM openziti_grants WHERE id=?").get(issued.json.id).persistent, 1);
+  await session.post("/api/auth/logout");
+  await admin.post("/api/admin/private-access/openziti/reconcile");
+  assert.equal(sql.prepare("SELECT persistent FROM openziti_grants WHERE id=?").get(issued.json.id).persistent, 1);
   assert.equal(
     (await owner.del(`/api/private-access/services/${created.json.id}`)).status,
     200,
@@ -206,11 +206,12 @@ test("validated groups can manage an unassigned pool VM; entitlements grant only
   const auth = sql
     .prepare("SELECT expires_at FROM oidc_authorizations WHERE user_id=?")
     .get((await reader.get("/api/auth/me")).json.id);
-  assert(issued.json.accessExpiresAt <= auth.expires_at);
+  assert.equal(issued.json.accessExpiresAt, null);
+  assert.equal(issued.json.persistent, true);
   await reader.del(`/api/private-access/grants/${issued.json.id}`);
 });
 
-test("expired claims and removed entitlements revoke controller access; password login cannot borrow claims", async () => {
+test("persistent grants survive browser expiry but revoke on removed policies and changed SSO groups", async () => {
   const issued = await reader.post(
     `/api/private-access/services/${serviceId}/access`,
   );
@@ -226,10 +227,14 @@ test("expired claims and removed entitlements revoke controller access; password
     ),
   );
   await admin.post("/api/admin/private-access/openziti/reconcile");
-  assert.equal(
-    sql.prepare("SELECT * FROM openziti_grants WHERE id=?").get(issued.json.id),
-    undefined,
-  );
+  assert.equal(sql.prepare("SELECT persistent FROM openziti_grants WHERE id=?").get(issued.json.id).persistent, 1);
+  reader = await login("reader@rcadea.cloud", { groups: ["members"], entitlements: ["vm:ssh"] });
+  await reader.del(`/api/private-access/grants/${issued.json.id}`);
+  const beforeChange = await reader.post(`/api/private-access/services/${serviceId}/access`);
+  assert.equal(beforeChange.status, 200, beforeChange.text);
+  assert.equal((await oidc.login(reader, { email: "reader@rcadea.cloud", groups: ["members"], entitlements: [] })).status, 200);
+  await admin.post("/api/admin/private-access/openziti/reconcile");
+  assert.equal(sql.prepare("SELECT 1 FROM openziti_grants WHERE id=?").get(beforeChange.json.id), undefined);
   reader = await login("reader@rcadea.cloud", {
     groups: ["members"],
     entitlements: ["vm:ssh"],

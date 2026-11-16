@@ -1,3 +1,7 @@
+import {
+  networkRequest,
+  initializeNetworkAuthorization,
+} from "./network-authorizations.js";
 import { randomUUID } from "node:crypto";
 import { db, audit } from "./db.js";
 import { authorizedRow, authorizationFor, customerHasGuest } from "./access.js";
@@ -273,7 +277,7 @@ export function zitiOverview() {
       .all(),
     grants: db
       .prepare(
-        "SELECT id,service_id,user_id,expires_at,state,error FROM openziti_grants",
+        "SELECT id,service_id,user_id,expires_at,persistent,state,error FROM openziti_grants",
       )
       .all(),
   };
@@ -293,7 +297,7 @@ export async function vmZitiAccess(req, vmid) {
       ...s,
       grants: db
         .prepare(
-          "SELECT id,expires_at,state,error FROM openziti_grants WHERE service_id=? AND user_id=?",
+          "SELECT id,expires_at,persistent,state,error FROM openziti_grants WHERE service_id=? AND user_id=?",
         )
         .all(s.id, req.account.id),
     })),
@@ -523,7 +527,7 @@ export function createZitiGrant(req, id) {
   return zitiLock(async () => {
     enabled();
     const s = await scoped(req, id, "private-access.read");
-    ssoUser(req);
+    initializeNetworkAuthorization(ssoUser(req), authorizationFor(req));
     if (s.state !== "ready") throw zitiError("Service is not ready", 409);
     if (
       db
@@ -537,12 +541,9 @@ export function createZitiGrant(req, id) {
         409,
       );
     const gid = randomUUID(),
-      expires = Math.min(
-        now() + 900,
-        authorizationFor(req)?.expiresAt ?? Infinity,
-      );
+      expires = 0;
     db.prepare(
-      "INSERT INTO openziti_grants(id,service_id,user_id,authorization_id,expires_at,state,error) VALUES(?,?,?,?,?,'pending',NULL)",
+      "INSERT INTO openziti_grants(id,service_id,user_id,authorization_id,expires_at,persistent,state,error) VALUES(?,?,?,?,?,1,'pending',NULL)",
     ).run(gid, id, req.account.id, req.user?.az ?? null, expires);
     try {
       const result = await withController(async (c) => {
@@ -574,7 +575,7 @@ export function createZitiGrant(req, id) {
         grantId: gid,
         expiresAt: expires,
       });
-      return { ...result, id: gid, accessExpiresAt: expires };
+      return { ...result, id: gid, accessExpiresAt: null, persistent: true };
     } catch (err) {
       db.prepare(
         "UPDATE openziti_grants SET state='revoking',error=? WHERE id=?",
@@ -590,13 +591,13 @@ export function renewZitiGrant(req, id) {
     if (!g || g.user_id !== req.account.id)
       throw zitiError("Access identity not found", 404);
     const s = await scoped(req, g.service_id, "private-access.read");
-    ssoUser(req);
+    initializeNetworkAuthorization(ssoUser(req), authorizationFor(req));
     if (!g.identity_owner)
       throw zitiError(
         "Revoke this legacy certificate access and connect with SSO",
         409,
       );
-    if (g.state !== "active" || g.expires_at <= now())
+    if (g.state !== "active" || (!g.persistent && g.expires_at <= now()))
       throw zitiError("Access expired. Revoke it and enroll again.", 409);
     await withController(async (c) => {
       await assertScopedController(c);
@@ -606,18 +607,15 @@ export function renewZitiGrant(req, id) {
         throw zitiError("The SSO identity changed", 409);
     });
     await scoped(req, s.id, "private-access.read");
-    const expires = Math.min(
-      now() + 900,
-      authorizationFor(req)?.expiresAt ?? Infinity,
-    );
+    const expires = 0;
     db.prepare(
-      "UPDATE openziti_grants SET expires_at=?,authorization_id=? WHERE id=?",
+      "UPDATE openziti_grants SET expires_at=?,authorization_id=?,persistent=1 WHERE id=?",
     ).run(expires, req.user?.az ?? null, id);
     audit(req, s.vmid, "openziti_access_renewed", {
       grantId: id,
       expiresAt: expires,
     });
-    return { id, accessExpiresAt: expires };
+    return { id, accessExpiresAt: null, persistent: true };
   });
 }
 async function removeGrant(client, g) {
@@ -686,15 +684,17 @@ export function reconcileZitiAccess() {
         zitiSettings().enabled &&
         !!g.identity_owner &&
         g.state === "active" &&
-        g.expires_at > now();
+        (g.persistent || g.expires_at > now());
       const s = service(g.service_id);
       if (valid)
         try {
-          const req = {
-            account: { id: g.user_id },
-            user: { az: g.authorization_id },
-            selectedCustomerId: s.customer_id,
-          };
+          const req = g.persistent
+            ? networkRequest(g.user_id, s.customer_id)
+            : {
+                account: { id: g.user_id },
+                user: { az: g.authorization_id },
+                selectedCustomerId: s.customer_id,
+              };
           await authorize(req, s.vmid, "private-access.read");
           ssoUser(req);
         } catch {

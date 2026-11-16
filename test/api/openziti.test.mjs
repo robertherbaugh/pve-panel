@@ -162,7 +162,7 @@ test("services use only the exact VM and customer service, loopback host, router
     409,
   );
 });
-test("machine enrollment stays secret; user access requires SSO and expires", async () => {
+test("machine enrollment stays secret; user access requires SSO and stays persistent", async () => {
   assert.equal(
     (
       await bob.post(
@@ -182,7 +182,8 @@ test("machine enrollment stays secret; user access requires SSO and expires", as
   );
   assert.equal(result.status, 200, result.text);
   grantId = result.json.id;
-  assert(result.json.accessExpiresAt <= Date.now() / 1000 + 900);
+  assert.equal(result.json.accessExpiresAt, null);
+  assert.equal(result.json.persistent, true);
   assert.equal(
     (await bob.post(`/api/private-access/grants/${grantId}/renew`)).status,
     404,
@@ -203,7 +204,7 @@ test("machine enrollment stays secret; user access requires SSO and expires", as
   assert.equal(userIdentity.externalId, "ziti-alice@example.com");
   assert.equal(userIdentity.enrollment, undefined);
   sql
-    .prepare("UPDATE openziti_grants SET expires_at=0 WHERE id=?")
+    .prepare("UPDATE openziti_grants SET persistent=0,expires_at=1 WHERE id=?")
     .run(grantId);
   assert.equal(
     (await alice.post(`/api/private-access/grants/${grantId}/renew`)).status,
