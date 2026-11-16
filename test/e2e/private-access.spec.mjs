@@ -161,9 +161,12 @@ test("customers use machine enrollment and SSO user access without a personal ce
   await expect(
     page.getByRole("heading", { name: "Connect with SSO" }),
   ).toBeVisible();
+  await expect(page.locator("[data-remote-body]")).toContainText(
+    "Until revoked",
+  );
   await expect(
     page.getByRole("button", { name: "Renew access", exact: true }),
-  ).toBeEnabled();
+  ).toHaveCount(0);
   const form = page.locator("[data-add-service]");
   await expect(page.locator("[data-remote-body]")).not.toContainText(
     "Authentik",
@@ -218,10 +221,13 @@ test("customers use machine enrollment and SSO user access without a personal ce
         JSON.stringify({ ...sessionStorage }),
     ),
   ).not.toContain("secret-enrollment-");
-  await page.getByRole("button", { name: "Renew access", exact: true }).click();
+
+  await expect(page.locator("[data-remote-body]")).toContainText(
+    "Until revoked",
+  );
   await expect(
     page.getByRole("button", { name: "Renew access", exact: true }),
-  ).toBeEnabled();
+  ).toHaveCount(0);
   if (process.env.PRIVATE_ACCESS_SCREENSHOTS)
     await page.screenshot({
       path: `${process.env.PRIVATE_ACCESS_SCREENSHOTS}/pve-private-access-customer.png`,

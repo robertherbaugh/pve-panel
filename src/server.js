@@ -1,3 +1,5 @@
+import { adminSharingRoutes, customerSharingRoutes } from './routes/sharing.js';
+import { startZrokReconciliation } from './zrok-access.js';
 import { adminPrivateAccessRoutes, customerPrivateAccessRoutes } from './routes/private-access.js';
 import { startZitiReconciliation } from './openziti-access.js';
 import { startDeletionRecovery } from './vm-deletion.js';
@@ -122,6 +124,7 @@ const customer = await buildServer('customer', async (app) => {
   await app.register(billingWebhookRoutes);
   await app.register(customerBillingRoutes);
   await app.register(customerPrivateAccessRoutes);
+  await app.register(customerSharingRoutes);
   await app.register(computeServiceRoutes);
   await app.register(retainedBackupRoutes);
   await app.register(customerContextRoutes);
@@ -147,6 +150,7 @@ const admin = await buildServer('admin', async (app) => {
   await app.register(adminCustomerRoutes);
   await app.register(adminRoutes);
   await app.register(adminPrivateAccessRoutes);
+  await app.register(adminSharingRoutes);
   await app.register(brandingRoutes);
   await app.register(computeCatalogRoutes);
   await app.register(adminBillingRoutes);
@@ -166,6 +170,7 @@ startComputeRecovery(admin.log);
 startBillingReconciliation(admin.log);
 startDeletionRecovery(admin.log);
 startZitiReconciliation(admin.log);
+startZrokReconciliation(admin.log);
 
 await customer.listen({ port: config.port, host: config.host });
 await admin.listen({ port: config.adminPort, host: config.adminHost });

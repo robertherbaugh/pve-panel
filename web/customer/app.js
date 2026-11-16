@@ -1,3 +1,4 @@
+import { renderSharing } from './sharing.js';
 import { renderOpenZiti } from './private-access.js';
 import { renderCustomerBilling } from './billing.js';
 import {renderRetainedBackups} from './retained-backups.js';
@@ -354,7 +355,7 @@ function renderDetail() {
   ].filter(Boolean).join(', ');
   const tabs = [['overview', 'Overview', 'chart'], ['snapshots', 'Snapshots', 'camera']];
   if (can('console')) tabs.push(['console', 'Console', 'terminal']);
-  if ((can('private-access.read') || can('tailscale.read')) && vm.type !== 'lxc') tabs.push(['remote', 'Remote access', 'link']);
+  if ((can('private-access.read') || can('tailscale.read') || can('sharing.read')) && vm.type !== 'lxc') tabs.push(['remote', 'Remote access', 'link']);
   if (can('backup.read') && state.account.backups) tabs.push(['backups', 'Backups', 'archive']);
   if (can('updates.read') && vm.osFamily === 'windows') tabs.push(['updates', 'Updates', 'download']);
 
@@ -570,12 +571,16 @@ async function renderRemote(body) {
   const vmid=state.selected, access=state.account.privateAccess;
   state.remoteProvider ??= access?.openziti?.enabled && can('private-access.read') ? 'openziti' : 'tailnet';
   const current=()=>vmid===state.selected && state.tab==='remote' && state.view==='server' && body.isConnected;
-  body.innerHTML=`<div class="tabs" role="group" aria-label="Remote access provider"><button class="tab ${state.remoteProvider==='openziti'?'active':''}" data-remote-provider="openziti">OpenZiti · ${access?.openziti?.enabled?'Enabled':'Disabled'}</button><button class="tab ${state.remoteProvider==='tailnet'?'active':''}" data-remote-provider="tailnet">${access?.remote?.provider==='headscale'?'Headscale':'Tailscale'} · ${state.account.tailscale?'Enabled':'Disabled'}</button></div><div class="section-stack" data-remote-body></div>`;
+  body.innerHTML=`<div class="tabs" role="group" aria-label="Remote access provider"><button class="tab ${state.remoteProvider==='openziti'?'active':''}" data-remote-provider="openziti">OpenZiti · ${access?.openziti?.enabled?'Enabled':'Disabled'}</button><button class="tab ${state.remoteProvider==='tailnet'?'active':''}" data-remote-provider="tailnet">${access?.remote?.provider==='headscale'?'Headscale':'Tailscale'} · ${state.account.tailscale?'Enabled':'Disabled'}</button><button class="tab ${state.remoteProvider==='zrok'?'active':''}" data-remote-provider="zrok">zrok · ${access?.zrok?.enabled?'Enabled':'Disabled'}</button></div><div class="section-stack" data-remote-body></div>`;
   body.querySelectorAll('[data-remote-provider]').forEach(b=>b.onclick=()=>{state.remoteProvider=b.dataset.remoteProvider;renderRemote(body);});
   const target=body.querySelector('[data-remote-body]');
   if(state.remoteProvider==='openziti') {
     if(!can('private-access.read')) {target.innerHTML='<p>You do not have permission to connect through OpenZiti.</p>';return;}
     return renderOpenZiti(target,{vmid,manage:can('private-access.manage'),current:()=>current()&&state.remoteProvider==='openziti'&&target.isConnected});
+  }
+  if(state.remoteProvider==='zrok') {
+    if(!can('sharing.read')) {target.innerHTML='<p>You do not have permission to use application sharing on this VM.</p>';return;}
+    return renderSharing(target,{vmid,manage:can('sharing.manage'),current:()=>current()&&state.remoteProvider==='zrok'&&target.isConnected});
   }
   if(!state.account.tailscale || !can('tailscale.read')) {target.innerHTML='<p>Tailscale and Headscale enrollment is disabled or not permitted for this VM.</p>';return;}
   return renderTailscale(target);

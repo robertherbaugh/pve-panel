@@ -19,14 +19,15 @@ export async function withPrivateAccessSetup(vmid, fn) {
 export function privateAccessBlocks(vmid) {
   return (
     settingUp.has(vmid) ||
-    !!db.prepare('SELECT 1 FROM openziti_services WHERE vmid=?').get(vmid)
+    !!db.prepare('SELECT 1 FROM openziti_services WHERE vmid=?').get(vmid) ||
+    !!db.prepare('SELECT 1 FROM zrok_accounts WHERE vmid=?').get(vmid)
   );
 }
 export function assertNoPrivateAccess(vmid, operation) {
   if (privateAccessBlocks(vmid))
     throw Object.assign(
       new Error(
-        `Remove OpenZiti services and wait for access setup before ${operation} this VM`,
+        `Remove OpenZiti services and zrok agents, then wait for access setup before ${operation} this VM`,
       ),
       { statusCode: 409, expose: true },
     );

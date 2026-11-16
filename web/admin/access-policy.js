@@ -14,7 +14,7 @@ export function renderAccessPolicy(container, { data, api, esc, toast, fail, con
     'backup.restore': 'Restore backups (legacy owner)', 'backup.files': 'Browse and download backup files', 'backup.schedule': 'Schedule backups (owner)',
     'updates.read': 'View Windows updates', 'updates.run': 'Install Windows updates', resize: 'Resize own created servers',
     reinstall: 'Reinstall own legacy servers', delete: 'Delete own created servers', extend: 'Extend own servers',
-    'private-access.read': 'Connect to OpenZiti services', 'private-access.manage': 'Manage OpenZiti VM services', 'tailscale.read': 'View own legacy Tailscale connection', 'tailscale.manage': 'Manage own legacy Tailscale connection', clone: 'Create servers from images' };
+    'sharing.read': 'Connect to private zrok shares', 'sharing.manage': 'Publish and manage zrok application shares', 'private-access.read': 'Connect to OpenZiti services', 'private-access.manage': 'Manage OpenZiti VM services', 'tailscale.read': 'View own legacy Tailscale connection', 'tailscale.manage': 'Manage own legacy Tailscale connection', clone: 'Create servers from images' };
   const list = (v) => v.split(',').map((x) => x.trim()).filter(Boolean);
   const field = (name, label, value, hint = '', attrs = '') => `<label>${label}<input data-field="${name}" value="${esc(value)}" ${attrs}>${hint ? `<span class="hint">${hint}</span>` : ''}</label>`;
   const number = (name, label, value) => `<label>${label}<input type="number" min="1" data-field="${name}" value="${value ?? ''}"></label>`;
@@ -37,7 +37,7 @@ export function renderAccessPolicy(container, { data, api, esc, toast, fail, con
     </table></div>
     <p data-policy-error class="form-error" role="alert"></p>
     <div class="access-inventory-status"><p class="muted small" data-inventory-status role="status">${loading('Loading Proxmox resources…')}</p><button type="button" class="btn" data-refresh-resources>Refresh Proxmox resources</button></div>
-    <p class="muted small">SSO group changes take effect after a fresh sign-in. Shared access expires after the configured authorization lifetime, including open consoles.</p>`;
+    <p class="muted small">SSO group changes take effect after a fresh sign-in. Browser permissions expire after the configured authorization lifetime, including open consoles. Provisioned OpenZiti access and zrok shares persist until revoked.</p>`;
   sectionTabs(container, 'Permissions', [
     { id: 'sets', label: 'Permission sets', nodes: [container.querySelector('.access-table-head'), container.querySelector('.table-wrap')] },
     { id: 'settings', label: 'Access settings', nodes: [container.querySelector('.access-settings'), container.lastElementChild] },

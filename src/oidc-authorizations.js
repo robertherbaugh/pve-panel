@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { db } from './db.js';
 import { config } from './config.js';
+import { rememberNetworkAuthorization, networkAuthorizationFor } from './network-authorizations.js';
 const fail = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 const strings = (value, name) => {
   if (
@@ -38,9 +39,12 @@ export function rememberAuthorization(user, claims) {
     `INSERT INTO oidc_authorizations (id,user_id,issuer,subject,claims,expires_at)
     VALUES (?,?,?,?,?,?)`,
   ).run(id, user.id, claims.iss, claims.sub, JSON.stringify(identity), expires);
+  rememberNetworkAuthorization(user, identity);
   return id;
 }
 export function authorizationFor(req) {
+  const network = networkAuthorizationFor(req);
+  if (network) return network;
   if (!req.user?.az) return null;
   const row = db
     .prepare(

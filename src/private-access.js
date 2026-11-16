@@ -1,3 +1,4 @@
+import { zrokOverview } from './zrok-access.js';
 import { config } from './config.js';
 import { remoteAccessSettings } from './remote-access-settings.js';
 import { tailscaleOverview } from './tailscale.js';
@@ -5,7 +6,7 @@ import { zitiOverview } from './openziti-access.js';
 export function privateAccessOverview() {
   const selected = remoteAccessSettings(),
     connections = tailscaleOverview(),
-    openziti = zitiOverview();
+    openziti = zitiOverview(), zrok = zrokOverview();
   const providers = [
     {
       id: 'openziti',
@@ -65,17 +66,18 @@ export function privateAccessOverview() {
     {
       id: 'zrok',
       name: 'zrok',
-      supported: false,
-      enabled: false,
-      configured: false,
-      health: 'not_available',
-      detail: 'Application sharing. Panel integration is planned.',
-      connections: 0,
+      supported: true,
+      enabled: zrok.settings.enabled,
+      configured: zrok.settings.configured,
+      health: zrok.agents.some(a=>a.state==='revoking') || zrok.shares.some(s=>s.state==='revoking') ? 'revocation_pending' : zrok.settings.checkError ? 'error' : zrok.settings.verifiedAt ? 'verified' : 'unchecked',
+      detail: 'Application sharing through your self-hosted zrok server. Public HTTPS and private TCP.',
+      connections: zrok.shares.length,
     },
   ];
   return {
     providers,
     openziti,
+    zrok,
     remote: selected,
     tailscaleRuntimeEnabled: config.tailscale.enabled,
     wireguard: {

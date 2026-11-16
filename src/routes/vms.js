@@ -1,3 +1,4 @@
+import { zrokSettings } from '../zrok-controller.js';
 import { zitiSettings } from '../openziti-controller.js';
 import { remoteAccessSettings } from '../remote-access-settings.js';
 import { catalogPower, setCustomerHa } from '../compute-ha.js';
@@ -190,7 +191,8 @@ export default async function vmRoutes(app) {
     const vpn = customer ? vpnInfoFor(a.id,customer.id) : {enabled:false};
     const tailscale = config.tailscale.enabled;
     const ziti = zitiSettings();
-    const privateAccess = {openziti:{enabled:ziti.enabled,configured:ziti.configured},remote:remoteAccessSettings()};
+    const sharing = zrokSettings();
+    const privateAccess = {zrok:{enabled:sharing.enabled,configured:sharing.configured,publicEnabled:sharing.publicEnabled},openziti:{enabled:ziti.enabled,configured:ziti.configured},remote:remoteAccessSettings()};
     // Version number only; commit, build date and update status stay admin-only.
     const panelVersion = config.showVersionToCustomers ? versionInfo.version : null;
     const backups = backupsAvailableFor(a.id,customer?.id);
