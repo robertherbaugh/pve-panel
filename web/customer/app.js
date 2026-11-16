@@ -382,7 +382,7 @@ function renderDetail() {
         ${tabs.map(([id, label, ic]) => `
           <button class="tab" role="tab" data-tab="${id}" aria-selected="${state.tab === id}">${icon(ic, { size: 16 })}<span>${label}</span></button>`).join('')}
       </div>
-      <section id="tab-body"></section>
+      <section id="tab-body" class="section-stack"></section>
     </div>`;
 
   renderTab();
@@ -570,7 +570,7 @@ async function renderRemote(body) {
   const vmid=state.selected, access=state.account.privateAccess;
   state.remoteProvider ??= access?.openziti?.enabled && can('private-access.read') ? 'openziti' : 'tailnet';
   const current=()=>vmid===state.selected && state.tab==='remote' && state.view==='server' && body.isConnected;
-  body.innerHTML=`<div class="tabs" role="group" aria-label="Remote access provider"><button class="tab ${state.remoteProvider==='openziti'?'active':''}" data-remote-provider="openziti">OpenZiti · ${access?.openziti?.enabled?'Enabled':'Disabled'}</button><button class="tab ${state.remoteProvider==='tailnet'?'active':''}" data-remote-provider="tailnet">${access?.remote?.provider==='headscale'?'Headscale':'Tailscale'} · ${state.account.tailscale?'Enabled':'Disabled'}</button></div><div data-remote-body></div>`;
+  body.innerHTML=`<div class="tabs" role="group" aria-label="Remote access provider"><button class="tab ${state.remoteProvider==='openziti'?'active':''}" data-remote-provider="openziti">OpenZiti · ${access?.openziti?.enabled?'Enabled':'Disabled'}</button><button class="tab ${state.remoteProvider==='tailnet'?'active':''}" data-remote-provider="tailnet">${access?.remote?.provider==='headscale'?'Headscale':'Tailscale'} · ${state.account.tailscale?'Enabled':'Disabled'}</button></div><div class="section-stack" data-remote-body></div>`;
   body.querySelectorAll('[data-remote-provider]').forEach(b=>b.onclick=()=>{state.remoteProvider=b.dataset.remoteProvider;renderRemote(body);});
   const target=body.querySelector('[data-remote-body]');
   if(state.remoteProvider==='openziti') {
@@ -2034,7 +2034,7 @@ function openAccount() {
       <div id="retained-backups" class="account-section"></div>
       ${state.account.panelVersion ? `
         <section class="security-card about-panel">
-          <div>
+          <div class="security-card-copy">
             <h2 class="twofa-title">About this panel</h2>
             <p class="muted">You're using version <span class="mono">${esc(state.account.panelVersion)}</span>.</p>
           </div>

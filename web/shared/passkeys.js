@@ -81,8 +81,8 @@ export async function renderPasskeys(container) {
   const list = data.passkeys;
 
   container.innerHTML = `
-    <section class="security-card passkeys-card">
-      <div>
+    <section class="security-card security-card-split passkeys-card">
+      <div class="security-card-copy">
         <h2 class="twofa-title">Passkeys ${list.length ? `<span class="pill pill-running">${list.length}</span>` : '<span class="pill">None</span>'}</h2>
         <p class="muted">Sign in with your fingerprint, face, device PIN or a security key instead of a password and code.
           Passkeys can't be phished: they only work on this panel's address.</p>

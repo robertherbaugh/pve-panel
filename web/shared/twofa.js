@@ -177,8 +177,8 @@ export async function renderSecurity(container, { email }) {
 
   if (!s.enabled) {
     container.innerHTML = `
-      <section class="security-card">
-        <div>
+      <section class="security-card security-card-split">
+        <div class="security-card-copy">
           <h2 class="twofa-title">Two-factor authentication <span class="pill">Off</span></h2>
           <p class="muted">Protect your account with a code from your phone in addition to your password.
             Even if someone learns your password, they can't sign in without your phone.</p>
@@ -197,8 +197,8 @@ export async function renderSecurity(container, { email }) {
   }
 
   container.innerHTML = `
-    <section class="security-card">
-      <div>
+    <section class="security-card security-card-split">
+      <div class="security-card-copy">
         <h2 class="twofa-title">Two-factor authentication <span class="pill pill-running">On</span></h2>
         <p class="muted">Signing in needs your password and a code from your authenticator app.
           ${s.required ? 'Your provider requires it for your account.' : ''}</p>
