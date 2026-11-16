@@ -23,6 +23,7 @@ import { pve, clusterGuests, guestPath, waitTask, invalidateGuestCache, PveError
 import { networkOf, ensureIsolation } from './network.js';
 import { customerById,personalCustomerId } from './tenancy.js';
 import { capacityLocks,capacityBusy } from './capacity.js';
+import { assertNoPrivateAccess } from './private-access-guard.js';
 import { limitsOf, usageOf, customerUsage, diskTotalGb } from './provision.js';
 import { activeRun as activeWindowsUpdate } from './winupdate.js';
 
@@ -249,6 +250,7 @@ function parseConfig(text) {
 }
 
 export async function startRestore(req,row,guest,options) {
+  assertNoPrivateAccess(row.vmid, 'restoring');
   assertComputeIdle(row.vmid);
   if(capacityBusy(row.customer_id)) throw new BackupError(409,'Another operation is changing this customer’s resource usage');
   const key=`customer:${row.customer_id}`; capacityLocks.add(key);

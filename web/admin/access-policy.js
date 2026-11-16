@@ -14,7 +14,7 @@ export function renderAccessPolicy(container, { data, api, esc, toast, fail, con
     'backup.restore': 'Restore backups (legacy owner)', 'backup.files': 'Browse and download backup files', 'backup.schedule': 'Schedule backups (owner)',
     'updates.read': 'View Windows updates', 'updates.run': 'Install Windows updates', resize: 'Resize own created servers',
     reinstall: 'Reinstall own legacy servers', delete: 'Delete own created servers', extend: 'Extend own servers',
-    'tailscale.read': 'View own legacy Tailscale connection', 'tailscale.manage': 'Manage own legacy Tailscale connection', clone: 'Create servers from images' };
+    'private-access.read': 'Connect to OpenZiti services', 'private-access.manage': 'Manage OpenZiti VM services', 'tailscale.read': 'View own legacy Tailscale connection', 'tailscale.manage': 'Manage own legacy Tailscale connection', clone: 'Create servers from images' };
   const list = (v) => v.split(',').map((x) => x.trim()).filter(Boolean);
   const field = (name, label, value, hint = '', attrs = '') => `<label>${label}<input data-field="${name}" value="${esc(value)}" ${attrs}>${hint ? `<span class="hint">${hint}</span>` : ''}</label>`;
   const number = (name, label, value) => `<label>${label}<input type="number" min="1" data-field="${name}" value="${value ?? ''}"></label>`;

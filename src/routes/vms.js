@@ -1,3 +1,5 @@
+import { zitiSettings } from '../openziti-controller.js';
+import { remoteAccessSettings } from '../remote-access-settings.js';
 import { catalogPower, setCustomerHa } from '../compute-ha.js';
 import { backupUsage } from '../compute-backups.js';
 import { computeManaged, assertComputeIdle, allocationFor } from '../compute-state.js';
@@ -187,11 +189,13 @@ export default async function vmRoutes(app) {
     const network = customer ? networkOf(a.id,customer.id) : null;
     const vpn = customer ? vpnInfoFor(a.id,customer.id) : {enabled:false};
     const tailscale = config.tailscale.enabled;
+    const ziti = zitiSettings();
+    const privateAccess = {openziti:{enabled:ziti.enabled,configured:ziti.configured},remote:remoteAccessSettings()};
     // Version number only; commit, build date and update status stay admin-only.
     const panelVersion = config.showVersionToCustomers ? versionInfo.version : null;
     const backups = backupsAvailableFor(a.id,customer?.id);
     const offerings = customer ? customerOfferings(customer.id) : null;
-    if (!a.can_create) return { customer:context, canCreate: false, offerings, network, vpn, tailscale, panelVersion, backups, authorization, cloneDestinations: [] };
+    if (!a.can_create) return { customer:context, canCreate: false, offerings, network, vpn, tailscale, privateAccess, panelVersion, backups, authorization, cloneDestinations: [] };
     return {
       customer:context, canCreate: true, offerings,
       personalCreation: !!req.account.can_create,
@@ -201,6 +205,7 @@ export default async function vmRoutes(app) {
       networksEnabled: config.network.enabled,
       vpn,
       tailscale,
+      privateAccess,
       panelVersion,
       backups,
       authorization,

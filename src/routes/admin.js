@@ -1,4 +1,5 @@
 import { startVmDeletion, deletionFor } from '../vm-deletion.js';
+import { privateAccessBlocks } from '../private-access-guard.js';
 import { assertComputeIdle } from '../compute-state.js';
 import { catalogPower, assertNoHa } from '../compute-ha.js';
 import { adminTable } from '../admin-table.js';
@@ -40,6 +41,7 @@ const policyResponse = (policy) => ({ policy, actions: ACTIONS, revision: policy
 
 
 function transferError(vmid, row) {
+  if (privateAccessBlocks(vmid)) return 'Remove OpenZiti services and wait for access setup before changing this server’s customer';
   if (deletionFor(vmid)) return 'Wait until the server deletion is reconciled';
   if (computeManaged(vmid)) return 'Catalog allocations must be deleted or explicitly transferred with their reservation history';
   if (['creating','deleting'].includes(row?.state) || activeRun(vmid) || db.prepare("SELECT 1 FROM backup_jobs WHERE vmid=? AND state IN ('queued','running')").get(vmid)) return 'Wait until the server’s current operation finishes before changing its customer';

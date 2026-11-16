@@ -1,4 +1,5 @@
 import { assertNoHa } from './compute-ha.js';
+import { assertNoPrivateAccess } from './private-access-guard.js';
 import { verifyComputeDeleted } from './compute-placement.js';
 // Destroying servers and deleting customers completely (admin actions).
 
@@ -29,11 +30,13 @@ export function isProtected(vmid, guest) {
  * removes it from the panel. Resolves when Proxmox has finished.
  */
 export async function destroyServer(actor, vmid) {
+  assertNoPrivateAccess(vmid, 'deleting');
   assertComputeIdle(vmid);
   if (computeManaged(vmid)) await assertNoHa(vmid);
   actor={account:actor.account,ip:actor.ip,customerId:actor.customerId??db.prepare('SELECT customer_id FROM vms WHERE vmid=?').get(vmid)?.customer_id};
   const guest = (await clusterGuests(true)).get(vmid);
   if (isProtected(vmid, guest)) throw new CleanupError(403, `Server ${vmid} is protected and can't be deleted here`);
+  assertNoPrivateAccess(vmid, 'deleting');
 
   if (guest) {
     const path = guestPath(guest);

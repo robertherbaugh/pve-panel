@@ -328,6 +328,29 @@ db.exec(`
 
 migrateTenancy(db);
 
+db.exec(`CREATE TABLE IF NOT EXISTS openziti_services (
+ id TEXT PRIMARY KEY, customer_id INTEGER NOT NULL, vmid INTEGER NOT NULL, kind TEXT NOT NULL,
+ hostname TEXT NOT NULL, state TEXT NOT NULL, error TEXT, created_at INTEGER NOT NULL,
+ UNIQUE(customer_id,vmid,kind)
+);
+CREATE TABLE IF NOT EXISTS openziti_grants (
+ id TEXT PRIMARY KEY, service_id TEXT NOT NULL REFERENCES openziti_services(id), user_id INTEGER NOT NULL,
+ authorization_id TEXT, expires_at INTEGER NOT NULL, state TEXT NOT NULL, error TEXT
+);
+CREATE TABLE IF NOT EXISTS openziti_objects (
+ name TEXT PRIMARY KEY, owner_id TEXT NOT NULL, type TEXT NOT NULL, remote_id TEXT
+);
+CREATE INDEX IF NOT EXISTS openziti_services_vm ON openziti_services(vmid);
+CREATE INDEX IF NOT EXISTS openziti_grants_service ON openziti_grants(service_id,user_id);
+CREATE INDEX IF NOT EXISTS openziti_objects_owner ON openziti_objects(owner_id);`);
+addColumn('openziti_grants', 'identity_owner', 'TEXT');
+addColumn('openziti_services', 'host_state', "TEXT NOT NULL DEFAULT 'manual'");
+addColumn('openziti_services', 'host_error', 'TEXT');
+db.exec(`CREATE TABLE IF NOT EXISTS openziti_user_identities (
+ user_id INTEGER PRIMARY KEY, owner_id TEXT UNIQUE NOT NULL, external_id TEXT UNIQUE NOT NULL,
+ issuer TEXT NOT NULL, auth_policy_id TEXT NOT NULL
+);`);
+
 const insertAudit = db.prepare(
   'INSERT INTO audit_log (user_id, vmid, action, detail, ip, customer_id) VALUES (?, ?, ?, ?, ?, ?)'
 );

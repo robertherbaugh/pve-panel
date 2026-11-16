@@ -336,7 +336,7 @@ export async function disconnectTailscale(req, vmid) {
 /** Overview for the admin interface (from the panel's own records). */
 export function tailscaleOverview() {
   return db.prepare(`
-    SELECT t.vmid, t.mode, t.state, t.error, t.hostname, t.ts_ip AS ip, t.updated_at AS updatedAt,
+    SELECT t.provider, t.login_server AS loginServer, t.vmid, t.mode, t.state, t.error, t.hostname, t.ts_ip AS ip, t.updated_at AS updatedAt,
            COALESCE(c.name,u.email) AS email,t.customer_id AS customerId, v.label
     FROM tailscale t JOIN users u ON u.id = t.user_id LEFT JOIN vms v ON v.vmid = t.vmid LEFT JOIN customers c ON c.id=t.customer_id
     ORDER BY u.email, t.vmid

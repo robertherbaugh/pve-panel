@@ -423,6 +423,17 @@ export async function startMockPve({ port = 0 } = {}) {
       log('AGENT EXEC', vmid, JSON.stringify(cmd)); const pid = ++pidSeq; const script = cmd.join(' ');
       const encIdx = cmd.indexOf('-EncodedCommand'); const decoded = encIdx >= 0 ? Buffer.from(cmd[encIdx+1], 'base64').toString('utf16le') : '';
       if (decoded) log('AGENT SCRIPT', vmid, decoded.includes('Set-NetIPInterface') ? '[reset network to DHCP]' : decoded.includes('Get-NetIPAddress') ? '[list IPv4]' : decoded.slice(0,60));
+      if (cmd[0] === '/bin/bash' && script.includes('rcadea-ziti')) {
+        let code=0;
+        if(script.includes("scratch=$(mktemp")) {
+          vm.zitiInstallCount=(vm.zitiInstallCount??0)+1;
+          vm.zitiEnrollmentInput=stdin;
+          code=vm.zitiFailInstall ? 1 : 0;
+          if(!code)vm.zitiEnrolled=true;
+        } else code=vm.zitiEnrolled ? 0 : 1;
+        execs.set(String(pid),{out:'',at:Date.now(),code,err:code && vm.zitiFailInstall ? stdin??'failed' : '',script});
+        return send(res,{pid});
+      }
       if (cmd[0] === '/bin/bash' && vmid !== 150) {
         const t = tailscaleExec(vm, vmid, cmd[2], stdin) ?? { out: '', code: 1, err: 'unknown command' };
         const pid = ++pidSeq; execs.set(String(pid), { out: t.out, at: Date.now(), code: t.code, err: t.err, script: cmd[2] }); return send(res, { pid });
