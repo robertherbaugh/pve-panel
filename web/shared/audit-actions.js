@@ -94,4 +94,12 @@ export const ACTION_LABELS = {
   tailscale_disconnected: 'Disconnected from Tailscale',
   vpn_device_remove: 'Removed VPN device',
   admin_vpn_device_remove: 'Removed VPN device',
+  admin_openziti_settings: 'Changed OpenZiti configuration',
+  admin_openziti_service_revoked: 'Revoked OpenZiti service (admin)',
+  openziti_service_created: 'Created OpenZiti service',
+  openziti_service_removed: 'Removed OpenZiti service',
+  openziti_host_enrollment: 'Downloaded OpenZiti VM enrollment',
+  openziti_access_granted: 'Issued OpenZiti device enrollment',
+  openziti_access_renewed: 'Renewed OpenZiti access',
+  openziti_access_revoked: 'Revoked OpenZiti access',
 };

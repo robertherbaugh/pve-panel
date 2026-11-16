@@ -1,3 +1,4 @@
+import { renderPrivateAccess } from './private-access.js';
 import { renderBilling } from './billing.js';
 import { ACTION_LABELS } from '/shared/audit-actions.js';
 import { sectionTabs, markedSections } from './sections.js';
@@ -28,7 +29,7 @@ const NAV_GROUPS = [
     ['servers', 'Servers', 'server', 'Manage servers and customer assignments.'],
     ['compute', 'Compute', 'cpu', 'Configure VM sizes, storage classes and customer offerings.'],
     ['templates', 'Templates', 'layers', 'Choose the images customers can use to create servers.'],
-    ['vpn', 'VPN', 'network', 'Manage customer VPN devices and connections.'],
+    ['vpn', 'Private Access', 'network', 'Configure private access providers and manage customer connections.'],
   ] },
   { label: 'Access', items: [
     ['customers', 'Customers', 'users', 'Manage customer organizations, memberships and resource boundaries.'],
@@ -101,7 +102,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
       } else if (st.tab === 'account') {
         // rendered by the shared security panel
       } else if (st.tab === 'vpn') {
-        st.vpn = await api('/api/admin/vpn');
+        [st.vpn, st.privateAccess] = await Promise.all([api('/api/admin/vpn'),api('/api/admin/private-access')]);
       } else if (st.tab === 'templates') {
         const t = await api('/api/admin/templates');
         ({ templates: st.templates, storages: st.storages } = t);
@@ -172,7 +173,11 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
       onSave: (saved) => { st.computeCatalog = saved; },
     });
     if (st.tab === 'billing') disposeAccessPolicy = renderBilling(root.querySelector('#admin-body'), { data: st.billing, reload: load });
-    if (st.tab === 'vpn') renderVpn();
+    if (st.tab === 'vpn') {
+      disposeAccessPolicy = renderPrivateAccess(root.querySelector('#admin-body'),{data:st.privateAccess,api,esc,toast,fail,confirmAction,reload:load});
+      const wireguard=root.querySelector('[data-wireguard-devices]');
+      if (st.vpn.status.enabled && wireguard) { const legacy=document.createElement('div'); renderVpn(legacy); wireguard.append(legacy); }
+    }
     if (st.tab === 'activity') renderActivity();
     if (st.tab === 'account') {
       const body = root.querySelector('#admin-body');
@@ -823,9 +828,8 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
         </div>` : '<p class="muted">No server is connected to Tailscale yet.</p>'}</section>`;
   }
 
-  function renderVpn() {
+  function renderVpn(body = root.querySelector('#admin-body')) {
     const { status, devices } = st.vpn;
-    const body = root.querySelector('#admin-body');
     if (!status.enabled) {
       body.innerHTML = `
         <div class="empty" data-section="WireGuard">
@@ -871,7 +875,7 @@ export function createAdmin({ root, navigation, api, toast, fail, confirmAction,
             </tbody>
           </table>
         </div>` : '<p class="muted">No VPN devices yet. Customers add them under “VPN access”.</p>'}
-      </section>${tailscaleSection()}`;
+      </section>`;
     markedSections(body, 'VPN');
   }
 

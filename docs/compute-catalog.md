@@ -161,8 +161,11 @@ Headscale rules alone do not isolate guests on their underlying LAN.
 
 Customers control application exposure from their VMs.
 They can install exposure software such as Cloudflare.
-OpenZiti or zrok integration can follow as an optional service.
-Providers select Tailscale or Headscale under **Compute → Private access enrollment**.
+The [OpenZiti pilot](openziti.md) provides optional access to individual SSH and RDP services.
+zrok application sharing remains a future integration.
+Providers can review all access options under **Private Access**.
+The Tailscale or Headscale selector is under **Private Access → Headscale**
+and **Compute → Private access enrollment**.
 Headscale requires its HTTPS control server URL. Customers supply a pre-authentication key scoped to their customer.
 Enrollment uses the Tailscale guest client and QEMU guest agent on Linux or Windows.
 Keys pass through guest-agent stdin and a temporary restricted file. The panel does not retain them.
